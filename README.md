@@ -1,0 +1,179 @@
+# macmapd
+
+For Podman, use `just podman-build-arm64`, `just podman-build-amd64`, and
+`just container-smoke macmapd:dev-arm64`. The generic command
+`just container-build arm64` uses Podman by default; set
+`CONTAINER_ENGINE=docker` to use Docker. Docker recipes remain available. On
+macOS, a running Podman machine is required; building amd64 on ARM also requires
+emulation support in the VM. If AMD64 `rustc` crashes under QEMU, use
+`just podman-cross-amd64`: `Dockerfile.cross` runs an ARM64 compiler with an
+AMD64 cross-linker. This recipe is intended for an ARM64 VM and does not execute
+`rustc` under AMD64 emulation. The final AMD64 distroless stage only copies the
+cross-compiled binary. The smoke test also checks an actual UDP relay exchange,
+Linux wildcard binding, and UEFI/iPXE/OS routing in an isolated container network.
+
+`macmapd` is a Rust DHCPv4 server with static MAC-based assignments,
+BIOS/UEFI/iPXE network boot support, classless routes, periodically refreshed CSV
+client data, and Prometheus metrics. Detailed requirements are in
+[PLAN.md](PLAN.md).
+
+## Running
+
+You need the Rust version specified in `rust-toolchain.toml` (rustup installs it
+automatically) and [just](https://github.com/casey/just). All builds use
+`Cargo.lock`.
+
+```sh
+just build-release
+target/release/macmapd check-config --config examples/server.toml
+target/release/macmapd --config examples/server.toml
+```
+
+Before starting the server, replace the example addresses, CSV URL, and state
+path with your own values. On Linux, UDP/67 requires appropriate privileges. Use
+the [examples/macmapd.service](examples/macmapd.service) unit, which grants
+`CAP_NET_BIND_SERVICE` and creates `/var/lib/macmapd`. The binary is installed at
+`/usr/local/bin/macmapd`, and the configuration at `/etc/macmapd/config.toml`.
+
+The server accepts requests from any relay and looks clients up by the MAC in
+`chaddr`. With a wildcard bind on Linux, the Server Identifier is derived from
+the packet's local destination address. Other operating systems require an
+explicit `dhcp.server_identifier` when using a wildcard bind. Always configure it
+explicitly behind NAT: it must be an address reachable by clients, including for
+direct lease renewal. The application is not itself a relay and does not serve
+files over TFTP or HTTP.
+
+Logging is configured in the `[logging]` section:
+
+```toml
+[logging]
+level = "info"
+format = "json" # json or text
+disable_timestamp = false
+color = true    # applies to text format
+```
+
+`level` accepts standard `tracing_subscriber::EnvFilter` expressions, such as
+`debug` or `macmapd=debug,tower_http=warn`. Use `format = "text"` for readable
+console output; `json` is generally more convenient for systemd and log
+aggregators. Setting `disable_timestamp = true` omits the date and time.
+
+The CSV has seven fields and does not require a header (a header is also
+supported): `location,hostname,boot_type,mac,ip,prefix_length,gateway`.
+
+```csv
+dc1,host.example,uefi,AA:BB:CC:DD:EE:FF,10.20.0.10,24,10.20.0.1
+dc1,host.example,bios,AA:BB:CC:DD:EE:AA,10.20.0.11,24,10.20.0.1
+```
+
+Duplicate MAC or IP values reject the entire update; duplicate hostnames are
+allowed. `location` is included in logs and client metric labels so each
+host's boot location is visible. Ethernet prefixes `/1` through `/30` are
+supported; `/31` and `/32` are rejected. No lease database is maintained. When
+reassigning addresses, the operator must account for leases that may still be
+active for previous clients.
+
+BIOS and UEFI clients receive a default gateway. iPXE and OS clients that request
+option 121 receive only the specific routes through the GW in their CSV record,
+without a default route. DNS, NTP, and boot resources must be reachable through
+those routes. Boot file profiles are configured separately for x86_64 and arm64
+and are independent of the server's architecture.
+
+`/health` returns 200 when the DHCP socket is ready and a valid client snapshot is
+available; otherwise it returns 503. `/metrics` returns Prometheus text format;
+hostname and location metric labels come from the CSV, and every metric name has
+the `macmapd_` prefix. Both endpoints include `Server: macmapd/<version>` and
+`X-App-Version: <version>` headers. The metrics payload also exposes
+`macmapd_build_info{version="..."}`. A valid saved CSV is used indefinitely while
+the source is unavailable. The main TOML file is read only at startup.
+
+## Containers and Release Artifacts
+
+Podman is the default container engine for the generic recipes. The Docker-specific
+multi-platform image recipes require Docker with Buildx and a builder supporting
+both platforms (native nodes or QEMU/binfmt; Docker Desktop usually provides
+emulation).
+
+```sh
+just docker-build-amd64
+# or just docker-build-arm64
+docker volume create macmapd-state
+docker run -d --name macmapd \
+  --cap-drop ALL --sysctl net.ipv4.ip_unprivileged_port_start=0 \
+  -p 67:67/udp -p 127.0.0.1:8080:8080 \
+  --mount type=bind,src="$PWD/examples/server.toml",dst=/etc/macmapd/config.toml,readonly \
+  --mount type=volume,src=macmapd-state,dst=/var/lib/macmapd \
+  macmapd:dev-amd64
+```
+
+For containers, set `listen_ip = "0.0.0.0"`, HTTP
+`listen = "0.0.0.0:8080"`, a client-reachable `server_identifier`, and the state
+path `/var/lib/macmapd/clients.csv`. The example uses a separate container network
+namespace and permits binding low ports through sysctl. With host networking,
+grant appropriate privileges for port 67 instead. Verify routing to the relay:
+responses are sent to `giaddr:67`.
+
+The runtime image is based on `gcr.io/distroless/cc-debian13:nonroot`. It has no
+shell or package manager, but includes glibc and CA certificates needed by the
+dynamically linked Rust binary and HTTPS CSV polling. The process runs as the
+standard distroless UID/GID `65532:65532`. When bind-mounting the state directory,
+make it writable by this UID. A Docker or Podman named volume is usually easier,
+but it must also be writable by the non-root process. Linux binaries target the
+Debian Trixie glibc environment or a compatible one.
+
+```sh
+just build-amd64                # cargo-dist artifact for x86_64-unknown-linux-gnu
+just build-arm64                # cargo-dist artifact for aarch64-unknown-linux-gnu
+just dist-plan                  # show planned cargo-dist artifacts
+just dist-build                 # build both cargo-dist artifacts
+just container-build arm64      # build an image with Podman by default
+just container-smoke macmapd:dev-arm64
+just docker-build-multi         # dist/macmapd.oci.tar, without publishing
+IMAGE=registry.example/dhcp TAG=v0.1.0 just docker-build-multi
+just docker-push registry.example/dhcp v0.1.0
+```
+
+`build-amd64` and `build-arm64` run `cargo-dist` in a temporary Linux container
+and place release archives in `target/distrib`. On ARM hosts, `build-amd64` uses
+an ARM64 runner with `cargo-zigbuild` by default to avoid running amd64 `rustc`
+under QEMU. Override the runner with `DIST_AMD64_RUNNER_PLATFORM`. The image name,
+tag, and OCI artifact directory are controlled by `IMAGE`, `TAG`, and `ARTIFACTS`.
+Select Docker for generic recipes with `CONTAINER_ENGINE=docker`. Only
+`docker-push` publishes an image and requires an explicit name and tag.
+
+## GitHub Actions
+
+The repository includes three workflows:
+
+- `CI` runs checks, unit tests, integration tests, and a release build on every
+  push and pull request for every branch.
+- `Publish main container` builds and publishes the multi-platform
+  `ghcr.io/<owner>/macmapd:latest` image after every push to `main`.
+- `Release` accepts `vX.Y.Z` tags that point to a commit reachable from `main`,
+  publishes `stable`, `vX.Y.Z`, and `X.Y.Z` image tags, and attaches the amd64
+  and arm64 cargo-dist archives plus SHA-256 files to the GitHub Release.
+
+The workflows use the repository's default `GITHUB_TOKEN`; publishing jobs grant
+it package and release write permissions, so no additional registry secret is
+required for GHCR.
+
+## Checks
+
+```sh
+just fmt
+just check                     # fmt-check, Clippy, and unit tests
+just test-integration
+just docker-smoke macmapd:dev-amd64
+```
+
+The smoke test requires Docker or Podman and curl. It starts a temporary CSV HTTP
+source in `nginx:mainline-alpine`, verifies health, metrics, and CSV persistence,
+then restarts the server while the source is unavailable. UDP/67 is not published
+to the host. Created containers and the network are removed; temporary files
+remain at the printed path for diagnostics.
+
+Testing the complete client -> relay -> server path and BIOS/UEFI/iPXE requires
+an isolated Linux network and test bootloaders. Creating network namespaces
+requires `CAP_NET_ADMIN` or root; never point these tests at a production DHCP
+network. Building for another architecture is not a substitute for running and
+testing on that architecture.

@@ -1,0 +1,2 @@
+dc1,host.name1,uefi,AA:BB:CC:DD:EE:FF,1.2.3.4,24,1.2.3.1
+dc1,host.name2,bios,AA:BB:CC:DD:EE:AA,1.2.3.5,24,1.2.3.1

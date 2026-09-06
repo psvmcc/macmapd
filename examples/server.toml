@@ -1,0 +1,38 @@
+[dhcp]
+listen_ip = "0.0.0.0"
+# Set the address reachable by clients, especially with container port publishing.
+server_identifier = "192.0.2.10"
+lease_seconds = 3600
+
+[http]
+listen = "0.0.0.0:8080"
+
+[logging]
+level = "info"
+format = "text"
+disable_timestamp = false
+color = true
+
+[client_options]
+dns = ["10.10.0.53", "10.10.0.54"]
+ntp = ["10.10.0.123"]
+domain = "example.internal"
+classless_routes = ["10.0.0.0/8", "172.16.0.0/12"]
+
+[boot]
+tftp_server = "10.10.0.20"
+
+[boot.architectures.x86_64]
+bios_file = "undionly.kpxe"
+uefi_file = "ipxe-x86_64.efi"
+ipxe_file = "http://10.10.0.20/x86_64/boot.ipxe"
+
+[boot.architectures.arm64]
+uefi_file = "ipxe-arm64.efi"
+ipxe_file = "http://10.10.0.20/arm64/boot.ipxe"
+
+[clients_source]
+url = "https://config.example.internal/clients.csv"
+poll_interval_seconds = 60
+timeout_seconds = 10
+state_file = "/var/lib/macmapd/clients.csv"
