@@ -7,8 +7,7 @@ rust_image=${DIST_RUST_IMAGE:-docker.io/library/rust:1.98.0-trixie}
 dist_version=${CARGO_DIST_VERSION:-0.32.0}
 
 case "$target" in
-    x86_64-unknown-linux-gnu) platform=${DIST_AMD64_RUNNER_PLATFORM:-linux/arm64} ;;
-    aarch64-unknown-linux-gnu) platform=linux/arm64 ;;
+    x86_64-unknown-linux-gnu) platform=${DIST_AMD64_RUNNER_PLATFORM:-linux/amd64} ;;
     *) echo "unsupported dist target: $target" >&2; exit 2 ;;
 esac
 

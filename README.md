@@ -1,16 +1,13 @@
 # macmapd
 
-For Podman, use `just podman-build-arm64`, `just podman-build-amd64`, and
-`just container-smoke macmapd:dev-arm64`. The generic command
-`just container-build arm64` uses Podman by default; set
+For Podman, use `just podman-build-amd64` and
+`just container-smoke macmapd:dev-amd64`. The generic command
+`just container-build` uses Podman by default; set
 `CONTAINER_ENGINE=docker` to use Docker. Docker recipes remain available. On
-macOS, a running Podman machine is required; building amd64 on ARM also requires
-emulation support in the VM. If AMD64 `rustc` crashes under QEMU, use
-`just podman-cross-amd64`: `Dockerfile.cross` runs an ARM64 compiler with an
-AMD64 cross-linker. This recipe is intended for an ARM64 VM and does not execute
-`rustc` under AMD64 emulation. The final AMD64 distroless stage only copies the
-cross-compiled binary. The smoke test also checks an actual UDP relay exchange,
-Linux wildcard binding, and UEFI/iPXE/OS routing in an isolated container network.
+macOS, a running Podman machine is required; building amd64 on ARM may require
+emulation support in the VM. The smoke test also checks an actual UDP relay
+exchange, Linux wildcard binding, and UEFI/iPXE/OS routing in an isolated
+container network.
 
 `macmapd` is a Rust DHCPv4 server with static MAC-based assignments,
 BIOS/UEFI/iPXE network boot support, classless routes, periodically refreshed CSV
@@ -68,9 +65,10 @@ dc1,host.example,bios,AA:BB:CC:DD:EE:AA,10.20.0.11,24,10.20.0.1
 
 Duplicate MAC or IP values reject the entire update; duplicate hostnames are
 allowed. `location` is included in logs and client metric labels so each
-host's boot location is visible. Ethernet prefixes `/1` through `/30` are
-supported; `/31` and `/32` are rejected. No lease database is maintained. When
-reassigning addresses, the operator must account for leases that may still be
+host's boot location is visible. Ethernet prefixes `/1` through `/30` use normal
+subnet semantics; `/31` is supported for point-to-point links with distinct client
+and gateway addresses, while `/32` is rejected. No lease database is maintained.
+When reassigning addresses, the operator must account for leases that may still be
 active for previous clients.
 
 BIOS and UEFI clients receive a default gateway. iPXE and OS clients that request
@@ -89,14 +87,12 @@ the source is unavailable. The main TOML file is read only at startup.
 
 ## Containers and Release Artifacts
 
-Podman is the default container engine for the generic recipes. The Docker-specific
-multi-platform image recipes require Docker with Buildx and a builder supporting
-both platforms (native nodes or QEMU/binfmt; Docker Desktop usually provides
-emulation).
+Podman is the default container engine for the generic recipes. Automated GitHub
+Actions builds and publishes the `linux/amd64` image only. The application itself
+still supports ARM64 boot profiles.
 
 ```sh
 just docker-build-amd64
-# or just docker-build-arm64
 docker volume create macmapd-state
 docker run -d --name macmapd \
   --cap-drop ALL --sysctl net.ipv4.ip_unprivileged_port_start=0 \
@@ -123,21 +119,16 @@ Debian Trixie glibc environment or a compatible one.
 
 ```sh
 just build-amd64                # cargo-dist artifact for x86_64-unknown-linux-gnu
-just build-arm64                # cargo-dist artifact for aarch64-unknown-linux-gnu
 just dist-plan                  # show planned cargo-dist artifacts
-just dist-build                 # build both cargo-dist artifacts
-just container-build arm64      # build an image with Podman by default
-just container-smoke macmapd:dev-arm64
-just docker-build-multi         # dist/macmapd.oci.tar, without publishing
-IMAGE=registry.example/dhcp TAG=v0.1.0 just docker-build-multi
+just dist-build                 # build the amd64 cargo-dist artifact
+just container-build             # build an amd64 image with Podman by default
+just container-smoke macmapd:dev-amd64
 just docker-push registry.example/dhcp v0.1.0
 ```
 
-`build-amd64` and `build-arm64` run `cargo-dist` in a temporary Linux container
-and place release archives in `target/distrib`. On ARM hosts, `build-amd64` uses
-an ARM64 runner with `cargo-zigbuild` by default to avoid running amd64 `rustc`
-under QEMU. Override the runner with `DIST_AMD64_RUNNER_PLATFORM`. The image name,
-tag, and OCI artifact directory are controlled by `IMAGE`, `TAG`, and `ARTIFACTS`.
+`build-amd64` runs `cargo-dist` in a temporary Linux container and places the
+release archive in `target/distrib`. The image name, tag, and OCI artifact
+directory are controlled by `IMAGE`, `TAG`, and `ARTIFACTS`.
 Select Docker for generic recipes with `CONTAINER_ENGINE=docker`. Only
 `docker-push` publishes an image and requires an explicit name and tag.
 
@@ -147,11 +138,11 @@ The repository includes three workflows:
 
 - `CI` runs checks, unit tests, integration tests, and a release build on every
   push and pull request for every branch.
-- `Publish main container` builds and publishes the multi-platform
+- `Publish main container` builds and publishes the `linux/amd64`
   `ghcr.io/<owner>/macmapd:latest` image after every push to `main`.
 - `Release` accepts `vX.Y.Z` tags that point to a commit reachable from `main`,
   publishes `stable`, `vX.Y.Z`, and `X.Y.Z` image tags, and attaches the amd64
-  and arm64 cargo-dist archives plus SHA-256 files to the GitHub Release.
+  cargo-dist archive plus its SHA-256 file to the GitHub Release.
 
 The workflows use the repository's default `GITHUB_TOKEN`; publishing jobs grant
 it package and release write permissions, so no additional registry secret is
@@ -177,3 +168,9 @@ an isolated Linux network and test bootloaders. Creating network namespaces
 requires `CAP_NET_ADMIN` or root; never point these tests at a production DHCP
 network. Building for another architecture is not a substitute for running and
 testing on that architecture.
+
+## License
+
+`macmapd` is licensed under the MIT License. See [LICENSE](LICENSE). Third-party
+dependencies remain under their respective licenses and are not relicensed by
+this project.

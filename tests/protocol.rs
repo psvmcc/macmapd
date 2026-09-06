@@ -68,18 +68,18 @@ fn route_matrix_and_architectures() {
         (&[0, 9][..], &b""[..], &b"PXEClient"[..], "uefi", "x86_64"),
         (&[0, 11][..], &b""[..], &b"PXEClient"[..], "uefi", "arm64"),
         (
-            &[0, 9][..],
-            &b"iPXE"[..],
-            &b"PXEClient"[..],
-            "ipxe",
-            "x86_64",
-        ),
-        (
             &[0, 11][..],
             &b"\x04iPXE"[..],
             &b"PXEClient"[..],
             "ipxe",
             "arm64",
+        ),
+        (
+            &[0, 9][..],
+            &b"iPXE"[..],
+            &b"PXEClient"[..],
+            "ipxe",
+            "x86_64",
         ),
         (&[][..], &b""[..], &b"ordinary-os"[..], "os", "unknown"),
     ] {

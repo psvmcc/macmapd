@@ -82,11 +82,11 @@ fn parse_client(row: &csv::StringRecord) -> Result<Client> {
     );
     let ip: Ipv4Addr = row[4].parse().context("invalid client IPv4")?;
     let prefix_length: u8 = row[5].parse().context("invalid prefix length")?;
-    // This service targets Ethernet subnets; /31 and /32 require explicit
-    // point-to-point/on-link gateway semantics and are intentionally unsupported.
+    // /31 is a point-to-point subnet (RFC 3021): both addresses are usable, so
+    // only the regular network/broadcast restrictions are skipped for /31.
     ensure!(
-        (1..=30).contains(&prefix_length),
-        "prefix must be 1..30; /31 and /32 are unsupported for Ethernet assignments"
+        (1..=31).contains(&prefix_length),
+        "prefix must be 1..31; /32 is unsupported for Ethernet assignments"
     );
     let gateway: Ipv4Addr = row[6].parse().context("invalid gateway IPv4")?;
     ensure!(
@@ -100,14 +100,17 @@ fn parse_client(row: &csv::StringRecord) -> Result<Client> {
         u32::from(gateway) & mask == network,
         "gateway must belong to client subnet"
     );
-    ensure!(
-        u32::from(ip) != network && u32::from(ip) != broadcast,
-        "client IP cannot be network or broadcast"
-    );
-    ensure!(
-        u32::from(gateway) != network && u32::from(gateway) != broadcast && ip != gateway,
-        "gateway cannot be network, broadcast, or client IP"
-    );
+    if prefix_length < 31 {
+        ensure!(
+            u32::from(ip) != network && u32::from(ip) != broadcast,
+            "client IP cannot be network or broadcast"
+        );
+        ensure!(
+            u32::from(gateway) != network && u32::from(gateway) != broadcast,
+            "gateway cannot be network or broadcast"
+        );
+    }
+    ensure!(ip != gateway, "gateway cannot equal client IP");
     Ok(Client {
         location: row[0].into(),
         mac,
@@ -142,13 +145,21 @@ mod tests {
             ("1.2.3.4", "1.2.3.0"),
             ("1.2.3.4", "1.2.3.255"),
             ("1.2.3.1", "1.2.4.1"),
-            (",24,", ",31,"),
             (",24,", ",32,"),
             ("host.name", "bad_name"),
             ("dc1", ""),
         ] {
             assert!(Clients::parse(&ROW.replace(from, to)).is_err(), "{to}");
         }
+    }
+
+    #[test]
+    fn point_to_point_prefix_is_supported() {
+        let row = ROW.replace(",1.2.3.4,24,1.2.3.1", ",1.2.3.4,31,1.2.3.5");
+        let clients = Clients::parse(&row).unwrap();
+        let client = clients.records.values().next().unwrap();
+        assert_eq!(client.prefix_length, 31);
+        assert_eq!(client.gateway, "1.2.3.5".parse::<Ipv4Addr>().unwrap());
     }
     #[test]
     fn optional_header_and_example() {

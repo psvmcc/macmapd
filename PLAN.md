@@ -14,8 +14,8 @@ no assignment.
 TFTP and boot-file HTTP servers are external services. The application tells the
 client which server and boot file to use.
 
-The primary target platforms are Linux amd64 and arm64. The application
-architecture is independent of the architecture of the bootloader being served.
+The application supports Linux amd64 and arm64 bootloader profiles. Automated
+binary, container, CI, and release builds currently target amd64 only.
 
 ## 2. Networking and DHCP
 
@@ -145,8 +145,9 @@ Validation rules:
 - Allow duplicate hostnames.
 - For conventional Ethernet subnets, require IP and GW to be in the same subnet;
   do not assign network or broadcast addresses to clients.
-- Reject `/31` and `/32`; Ethernet client assignments support prefixes `/1`
-  through `/30`.
+- Support `/1` through `/30` with conventional subnet semantics. Support `/31`
+  for point-to-point links, where both addresses are usable and the client and
+  gateway must be distinct. Reject `/32` for Ethernet assignments.
 - Reject the entire update when any row is invalid, reporting the row and cause.
 
 Store active data as an immutable snapshot indexed by MAC and IP. Each DHCP
@@ -336,11 +337,9 @@ versions are locked in `Cargo.lock`, while the Rust version is pinned in
   non-root runtime image.
 - Use Podman as the default engine for generic container recipes, while retaining
   explicit Docker/Buildx recipes.
-- Build `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu` release archives
-  with `cargo-dist` inside temporary Linux containers.
-- On ARM hosts, cross-build amd64 with an ARM64 runner, `cargo-zigbuild`, and Zig to
-  avoid executing amd64 `rustc` under QEMU.
-- Support Docker Buildx image builds for `linux/amd64` and `linux/arm64`.
+- Build the `x86_64-unknown-linux-gnu` release archive with `cargo-dist` inside a
+  temporary Linux container.
+- Automated Docker Buildx image builds target `linux/amd64` only.
 - Use the distroless image's glibc and CA certificates for the dynamically linked
   binary and HTTPS polling.
 - Mount the main configuration as a separate read-only file.
@@ -357,11 +356,11 @@ versions are locked in `Cargo.lock`, while the Rust version is pinned in
 
 - Run formatting, Clippy, unit tests, integration tests, and a release build on
   every push and pull request across all branches.
-- On pushes to `main`, build and publish the multi-platform
+- On pushes to `main`, build and publish the `linux/amd64`
   `ghcr.io/<owner>/macmapd:latest` image.
 - On `vX.Y.Z` tags reachable from `main`, publish `stable`, `vX.Y.Z`, and `X.Y.Z`
-  image tags and create a GitHub Release containing both cargo-dist archives and
-  their SHA-256 checksum files.
+  amd64 image tags and create a GitHub Release containing the amd64 cargo-dist
+  archive and its SHA-256 checksum file.
 - Use the repository `GITHUB_TOKEN` with `packages: write` and `contents: write`
   permissions for publishing jobs.
 
@@ -372,29 +371,23 @@ versions are locked in `Cargo.lock`, while the Rust version is pinned in
 | `just build` | Debug build for the current platform |
 | `just build-release` | Release build for the current platform |
 | `just build-amd64` | x86-64 Linux binary |
-| `just build-arm64` | ARM64 Linux binary |
 | `just dist-plan` | Show the planned cargo-dist artifacts |
-| `just dist-build` | Build both cargo-dist release archives |
+| `just dist-build` | Build the amd64 cargo-dist release archive |
 | `just fmt` | Format source code |
 | `just fmt-check` | Check formatting |
 | `just lint` | Run Clippy with warnings treated as errors |
 | `just test` | Run unit tests |
 | `just test-integration` | Test DHCP, polling, and state recovery |
 | `just check` | Run fmt-check, lint, and unit tests |
-| `just container-build [architecture]` | Build with the configured engine; Podman by default |
+| `just container-build` | Build the amd64 image with the configured engine |
 | `just container-smoke IMAGE` | Smoke-test with the configured engine |
 | `just docker-build-amd64` | Build a local amd64 image |
-| `just docker-build-arm64` | Build a local arm64 image |
-| `just docker-build-multi` | Export both platforms to an OCI archive |
-| `just docker-push` | Publish a tagged multi-platform image |
+| `just docker-push` | Publish a tagged amd64 image |
 | `just docker-smoke IMAGE` | Smoke-test an image with Docker |
 | `just podman-build-amd64` | Build a local amd64 image with Podman |
-| `just podman-build-arm64` | Build a local arm64 image with Podman |
-| `just podman-cross-amd64` | Cross-build amd64 using an ARM64 compiler container |
 
 Parameterize the image name, tag, artifact directory, and generic container engine.
-Document Docker/Buildx requirements and emulation for running a foreign
-architecture. Build commands use the lockfile. Document Linux capabilities and
+Document Docker/Buildx requirements. Build commands use the lockfile. Document Linux capabilities and
 privileges separately for network integration tests.
 
 ## 13. Testing
@@ -421,7 +414,7 @@ privileges separately for network integration tests.
 - Unavailable source, invalid CSV, write failure, HTTP 304, and restart recovery.
 - Health/metrics with usable state and without data.
 - BIOS/UEFI/iPXE in a virtual environment and, where available, on real clients.
-- amd64/arm64 builds and container smoke tests, using emulation when necessary.
+- amd64 builds and container smoke tests.
 
 ## 14. Implementation Stages
 
@@ -433,7 +426,7 @@ privileges separately for network integration tests.
    boot-stage logging.
 4. Implement polling, atomic state persistence, recovery, and snapshot replacement.
 5. Implement HTTP health/metrics, operational logs, and graceful shutdown.
-6. Add the Dockerfile, amd64/arm64 builds, all justfile recipes, deployment example,
+6. Add the Dockerfile, amd64 build recipes, deployment example,
    and systemd unit.
 7. Run integration checks, document limitations, and verify acceptance criteria.
 
@@ -455,7 +448,7 @@ privileges separately for network integration tests.
   labels, and all metric names use the `macmapd_` prefix.
 - `/health` and `/metrics` expose the application version in HTTP headers, and
   metrics include `macmapd_build_info` with a version label.
-- `just check`, integration tests, and both architecture builds pass.
+- `just check`, integration tests, and the automated amd64 build pass.
 - The container image starts with mounted configuration/state and passes the smoke
   test.
 
