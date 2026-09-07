@@ -112,7 +112,13 @@ for event in (received, sent):
     assert event["xid"] == "0x01020304", event
     assert "arch" in event and "architecture" not in event, event
     assert event["packet_size"] >= 240, event
-    assert len(event["packet_hex"]) == event["packet_size"] * 2, event
+    assert "packet_hex" not in event, event
+    assert "BOOTP/DHCP" in event["packet_dump"], event
+    assert "DHCP-Message Option 53" in event["packet_dump"], event
+relayed = next(e for e in events if "Agent-Information Option 82" in e.get("packet_dump", ""))
+classless = next(e for e in events if "Classless-Static-Route Option 121" in e.get("packet_dump", ""))
+assert "Circuit-ID SubOption 1" in relayed["packet_dump"], relayed
+assert classless["direction"] == "sent", classless
 print("PASS: warnings and packet debug retain structured context")
 '
 test -s "$smoke_dir/state/clients.csv"

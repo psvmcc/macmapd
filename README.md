@@ -82,9 +82,16 @@ dhcp_packet_debug = false
 console output; `json` is generally more convenient for systemd and log
 aggregators. Setting `disable_timestamp = true` omits the date and time. With
 `level = "debug"` and `dhcp_packet_debug = true`, received and sent packets are
-logged with decoded fields and a full hexadecimal payload. This is verbose and
+logged with decoded fields and a tcpdump-like BOOTP/DHCP dump. This is verbose and
 should normally be enabled only while diagnosing DHCP traffic. XIDs use the
 tcpdump-compatible form `0x27e9542c`, and the architecture field is named `arch`.
+
+The `packet_dump` field includes BOOTP addresses and flags, MAC, boot fields,
+XID, DHCP options, parameter request names, relay suboptions, and classless
+routes. JSON logging escapes its embedded newlines; text logging renders it as a
+readable multiline value. Since macmapd uses a UDP socket rather than a raw
+packet socket, IP ID, fragmentation flags, and other IP-header fields are not
+available. Packet dumps require no additional Linux capability.
 
 The CSV has nine fields and does not require a header (a header is also
 supported): `location,hostname,domain,boot_type,mtu,mac,ip,prefix_length,gateway`.
