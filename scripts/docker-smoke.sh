@@ -17,7 +17,7 @@ trap cleanup EXIT HUP INT TERM
 mkdir "$smoke_dir/source"
 mkdir "$smoke_dir/state"
 chmod 0777 "$smoke_dir/state"
-printf '%s\n' 'smoke,smoke.example,uefi,AA:BB:CC:DD:EE:FF,10.20.0.10,24,10.20.0.1' > "$smoke_dir/source/clients.csv"
+printf '%s\n' '# smoke clients' 'smoke,smoke.example,example,uefi,1500,AA:BB:CC:DD:EE:FF,10.20.0.10,24,10.20.0.1' > "$smoke_dir/source/clients.csv"
 cat > "$smoke_dir/config.toml" <<EOF
 [dhcp]
 listen_ip = "0.0.0.0"
@@ -25,14 +25,15 @@ lease_seconds = 3600
 [http]
 listen = "0.0.0.0:8080"
 [logging]
-level = "warn"
+level = "debug"
 format = "json"
 disable_timestamp = true
 color = false
+dhcp_packet_debug = true
 [client_options]
 dns = ["10.20.0.53"]
 ntp = ["10.20.0.123"]
-domain = "example"
+timezone = "Etc/UTC"
 classless_routes = ["10.0.0.0/8"]
 [boot]
 tftp_server = "10.20.0.20"
@@ -68,6 +69,26 @@ start_server() {
     curl --fail --silent "http://127.0.0.1:$smoke_port/metrics" >/dev/null
 }
 start_server
+cp "$smoke_dir/config.toml" "$smoke_dir/config.valid.toml"
+printf '%s\n' 'invalid = true' > "$smoke_dir/config.toml"
+"$engine" kill --signal HUP "$smoke_name" >/dev/null
+attempt=0
+until "$engine" logs "$smoke_name" 2>&1 | grep -q 'configuration reload rejected'; do
+    attempt=$((attempt + 1))
+    test "$attempt" -lt 30 || { "$engine" logs "$smoke_name"; exit 1; }
+    sleep 1
+done
+curl --fail --silent "http://127.0.0.1:$smoke_port/health" >/dev/null
+cp "$smoke_dir/config.valid.toml" "$smoke_dir/config.toml"
+"$engine" kill --signal HUP "$smoke_name" >/dev/null
+attempt=0
+until "$engine" logs "$smoke_name" 2>&1 | grep -q 'reloading configuration'; do
+    attempt=$((attempt + 1))
+    test "$attempt" -lt 30 || { "$engine" logs "$smoke_name"; exit 1; }
+    sleep 1
+done
+until curl --fail --silent "http://127.0.0.1:$smoke_port/health" >/dev/null; do sleep 1; done
+printf '%s\n' 'PASS: SIGHUP reloads the standard-path configuration'
 "$engine" run --rm --network "$smoke_name" \
     --mount "type=bind,src=$script_dir/relay-smoke.py,dst=/relay-smoke.py,readonly" \
     docker.io/library/python:3.14-alpine python /relay-smoke.py "$smoke_name"
@@ -77,13 +98,22 @@ start_server
     docker.io/library/python:3.14-alpine python -c '
 import json
 events = [json.loads(line)["fields"] for line in open("/server.log") if line.strip()]
-for key, value in (("result", "relay_option_omitted"), ("message", "boot mode mismatch"), ("message", "no matching boot file")):
+for key, value in (("result", "relay_option_omitted"), ("result", "boot_mode_mismatch"), ("result", "no_matching_boot_file")):
     event = next(e for e in events if e.get(key) == value)
     assert event["location"] == "smoke", event
     assert event["hostname"] == "smoke.example", event
     assert event["mac"] == "aa:bb:cc:dd:ee:ff", event
     assert event["boot_stage"] in ("bios", "uefi"), event
-print("PASS: WARN-level events retain client context")
+    assert event["xid"].startswith("0x") and len(event["xid"]) == 10, event
+    assert "arch" in event and "architecture" not in event, event
+received = next(e for e in events if e.get("direction") == "received")
+sent = next(e for e in events if e.get("direction") == "sent")
+for event in (received, sent):
+    assert event["xid"] == "0x01020304", event
+    assert "arch" in event and "architecture" not in event, event
+    assert event["packet_size"] >= 240, event
+    assert len(event["packet_hex"]) == event["packet_size"] * 2, event
+print("PASS: warnings and packet debug retain structured context")
 '
 test -s "$smoke_dir/state/clients.csv"
 "$engine" stop "$smoke_name-source" >/dev/null

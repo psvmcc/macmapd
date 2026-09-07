@@ -1,2 +1,3 @@
-dc1,host.name1,uefi,AA:BB:CC:DD:EE:FF,1.2.3.4,24,1.2.3.1
-dc1,host.name2,bios,AA:BB:CC:DD:EE:AA,1.2.3.5,24,1.2.3.1
+# location,hostname,domain,boot_type,mtu,mac,ip,prefix_length,gateway
+dc1,host.name1,example.internal,uefi,1500,AA:BB:CC:DD:EE:FF,1.2.3.4,24,1.2.3.1
+dc1,host.name2,example.internal,bios,1500,AA:BB:CC:DD:EE:AA,1.2.3.5,24,1.2.3.1

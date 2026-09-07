@@ -25,6 +25,8 @@ pub struct LoggingConfig {
     pub format: LogFormat,
     pub disable_timestamp: bool,
     pub color: bool,
+    #[serde(default)]
+    pub dhcp_packet_debug: bool,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -41,6 +43,7 @@ impl Default for LoggingConfig {
             format: LogFormat::Json,
             disable_timestamp: false,
             color: true,
+            dhcp_packet_debug: false,
         }
     }
 }
@@ -64,7 +67,8 @@ pub struct HttpConfig {
 pub struct ClientOptions {
     pub dns: Vec<Ipv4Addr>,
     pub ntp: Vec<Ipv4Addr>,
-    pub domain: String,
+    #[serde(default = "default_timezone")]
+    pub timezone: String,
     pub classless_routes: Vec<String>,
 }
 
@@ -144,8 +148,8 @@ impl Config {
             "state_file must not be empty"
         );
         ensure!(
-            valid_hostname(&self.client_options.domain),
-            "invalid client domain"
+            valid_timezone(&self.client_options.timezone),
+            "invalid timezone"
         );
         for ip in self
             .client_options
@@ -180,6 +184,22 @@ impl Config {
         }
         Ok(())
     }
+}
+
+fn default_timezone() -> String {
+    "Etc/UTC".into()
+}
+
+fn valid_timezone(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 255
+        && !value.chars().any(char::is_control)
+        && value.split('/').all(|part| {
+            !part.is_empty()
+                && part
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-' | b'+'))
+        })
 }
 
 pub fn prefix_mask(prefix: u8) -> u32 {
@@ -249,15 +269,22 @@ mod tests {
         assert_eq!(config.logging.format, LogFormat::Text);
         assert!(!config.logging.disable_timestamp);
         assert!(config.logging.color);
+        assert!(!config.logging.dhcp_packet_debug);
 
         let without_logging = include_str!("../examples/server.toml").replace(
-            "[logging]\nlevel = \"info\"\nformat = \"text\"\ndisable_timestamp = false\ncolor = true\n\n",
+            "[logging]\nlevel = \"info\"\nformat = \"text\"\ndisable_timestamp = false\ncolor = true\ndhcp_packet_debug = false\n\n",
             "",
         );
         let config: Config = toml::from_str(&without_logging).unwrap();
         assert_eq!(config.logging.level, "info");
         assert_eq!(config.logging.format, LogFormat::Json);
+        assert_eq!(config.client_options.timezone, "Etc/UTC");
         config.validate().unwrap();
+
+        let without_timezone =
+            include_str!("../examples/server.toml").replace("timezone = \"Etc/UTC\"\n", "");
+        let config: Config = toml::from_str(&without_timezone).unwrap();
+        assert_eq!(config.client_options.timezone, "Etc/UTC");
 
         let json_logging = include_str!("../examples/server.toml").replace(
             "format = \"text\"\ndisable_timestamp = false",

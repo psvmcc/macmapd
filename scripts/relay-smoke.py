@@ -83,11 +83,23 @@ with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             continue
         assert code != 82
         pos += 1 + offer[pos]
-    # Exercise warnings emitted inside reply(), with INFO logging disabled.
-    for architecture in (0, 11):
-        packet = packet[:240]
-        packet.extend(bytes([53, 1, 1, 93, 2, 0, architecture, 255]))
-        sock.sendto(packet, (server, 67))
-        offer, _ = sock.recvfrom(2048)
-        assert offer[240:243] == bytes([53, 1, 2])
+    # The row requires UEFI, so a BIOS request must only be logged.
+    packet = packet[:240]
+    packet.extend(bytes([53, 1, 1, 93, 2, 0, 0, 255]))
+    sock.sendto(packet, (server, 67))
+    sock.settimeout(0.5)
+    try:
+        sock.recvfrom(2048)
+        raise AssertionError("BIOS request received an address for a UEFI-only row")
+    except TimeoutError:
+        pass
+    finally:
+        sock.settimeout(5)
+
+    # ARM64 UEFI is allowed but the smoke config has no matching boot profile.
+    packet = packet[:240]
+    packet.extend(bytes([53, 1, 1, 93, 2, 0, 11, 255]))
+    sock.sendto(packet, (server, 67))
+    offer, _ = sock.recvfrom(2048)
+    assert offer[240:243] == bytes([53, 1, 2])
 print("PASS: Linux wildcard metadata, relay DISCOVER/REQUEST, UEFI/iPXE/OS routes")

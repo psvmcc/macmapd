@@ -13,4 +13,3 @@ FROM gcr.io/distroless/cc-debian13:nonroot AS runtime
 COPY --from=builder /build/target/release/macmapd /usr/local/bin/macmapd
 EXPOSE 67/udp 8080/tcp
 ENTRYPOINT ["/usr/local/bin/macmapd"]
-CMD ["--config", "/etc/macmapd/config.toml"]

@@ -15,6 +15,10 @@ fn format_mac(mac: &[u8; 6]) -> String {
         .join(":")
 }
 
+fn format_xid(xid: u32) -> String {
+    format!("0x{xid:08x}")
+}
+
 #[derive(Debug)]
 pub struct Packet {
     pub header: Vec<u8>,
@@ -106,6 +110,9 @@ impl Packet {
             .and_then(|v| <[u8; 4]>::try_from(v.as_slice()).ok())
             .map(Ipv4Addr::from)
     }
+    pub fn xid(&self) -> u32 {
+        u32::from_be_bytes(self.header[4..8].try_into().expect("validated DHCP header"))
+    }
     pub fn stage(&self) -> (&'static str, &'static str) {
         let user = self.options.get(&77).map(Vec::as_slice).unwrap_or_default();
         let mut classes = user;
@@ -157,6 +164,10 @@ impl Packet {
             "default"
         }
     }
+
+    pub fn boot_mode_mismatch(&self, client: &Client) -> bool {
+        matches!(self.stage().0, "bios" | "uefi") && self.stage().0 != client.boot_type
+    }
 }
 
 pub struct Reply {
@@ -185,6 +196,9 @@ pub fn reply(
         "invalid server identifier"
     );
     if packet.ip_option(54).is_some_and(|ip| ip != server) {
+        return Ok(None);
+    }
+    if packet.boot_mode_mismatch(client) {
         return Ok(None);
     }
     let message = match packet.message {
@@ -241,7 +255,11 @@ pub fn reply(
             .unwrap_or(0);
         option(&mut bytes, 1, &mask.to_be_bytes());
         option(&mut bytes, 12, client.hostname.as_bytes());
-        option(&mut bytes, 15, config.client_options.domain.as_bytes());
+        option(&mut bytes, 15, client.domain.as_bytes());
+        option(&mut bytes, 26, &client.mtu.to_be_bytes());
+        if packet.options.get(&55).is_some_and(|v| v.contains(&101)) {
+            option(&mut bytes, 101, config.client_options.timezone.as_bytes());
+        }
         for (code, ips) in [
             (6, &config.client_options.dns),
             (42, &config.client_options.ntp),
@@ -269,9 +287,6 @@ pub fn reply(
         }
         let (stage, architecture) = packet.stage();
         if matches!(stage, "bios" | "uefi" | "ipxe") {
-            if stage != "ipxe" && stage != client.boot_type {
-                tracing::warn!(mac=%format_mac(&client.mac),location=%client.location,hostname=%client.hostname,boot_stage=stage,architecture,detected=stage, configured=%client.boot_type, "boot mode mismatch");
-            }
             if let Some(files) = config.boot.architectures.get(architecture) {
                 boot_file = if stage == "ipxe" {
                     files.ipxe_file.clone()
@@ -292,8 +307,6 @@ pub fn reply(
                     config.boot.tftp_server.to_string().as_bytes(),
                 );
                 option(&mut bytes, 67, file.as_bytes());
-            } else {
-                tracing::warn!(mac=%format_mac(&client.mac),location=%client.location,hostname=%client.hostname,boot_stage=stage, architecture, "no matching boot file");
             }
         }
     } else {
@@ -364,9 +377,9 @@ pub async fn serve(config: Arc<Config>, shared: Arc<Shared>) -> Result<()> {
     tracing::info!(listen=%socket.local_addr()?,"DHCP listening");
     let mut buffer = vec![0u8; 65535];
     loop {
-        let (len, server) = if let Some(server) = explicit {
-            let (len, _) = socket.recv_from(&mut buffer).await?;
-            (len, server)
+        let (len, server, source) = if let Some(server) = explicit {
+            let (len, source) = socket.recv_from(&mut buffer).await?;
+            (len, server, source)
         } else {
             #[cfg(target_os = "linux")]
             {
@@ -381,6 +394,9 @@ pub async fn serve(config: Arc<Config>, shared: Arc<Shared>) -> Result<()> {
         let packet = match Packet::parse(&buffer[..len]) {
             Ok(packet) => packet,
             Err(error) => {
+                if config.logging.dhcp_packet_debug {
+                    tracing::debug!(direction="received",%source,local_ip=%server,packet_size=len,packet_hex=%hex(&buffer[..len]),result="malformed","DHCP packet");
+                }
                 shared.record_request("unknown", "unknown", "unknown", "unknown", "invalid");
                 shared.errors.fetch_add(1, Ordering::Relaxed);
                 tracing::warn!(%error,boot_stage="unknown",result="malformed","DHCP request");
@@ -391,7 +407,7 @@ pub async fn serve(config: Arc<Config>, shared: Arc<Shared>) -> Result<()> {
         let client = snapshot.as_ref().and_then(|s| s.records.get(&packet.mac));
         let location = client.map(|c| c.location.as_str()).unwrap_or("unknown");
         let hostname = client.map(|c| c.hostname.as_str()).unwrap_or("unknown");
-        let (stage, architecture) = packet.stage();
+        let (stage, arch) = packet.stage();
         shared.record_request(
             location,
             hostname,
@@ -400,26 +416,42 @@ pub async fn serve(config: Arc<Config>, shared: Arc<Shared>) -> Result<()> {
             message_name(packet.message),
         );
         let mac = format_mac(&packet.mac);
+        let xid = format_xid(packet.xid());
+        if config.logging.dhcp_packet_debug {
+            tracing::debug!(direction="received",%xid,%mac,location,hostname,dhcp_message=message_name(packet.message),%source,local_ip=%server,ciaddr=%packet.ciaddr,giaddr=%packet.giaddr,flags=%format!("0x{:04x}",u16::from_be_bytes(packet.header[10..12].try_into().unwrap())),boot_stage=stage,arch,packet_size=len,options=?packet.options,packet_hex=%hex(&buffer[..len]),"DHCP packet");
+        }
         // Put context on each event: an INFO span is disabled at WARN/ERROR levels.
         macro_rules! request_log {
             ($level:ident, $($fields:tt)*) => {
-                tracing::$level!(%mac,location,hostname,dhcp_message=message_name(packet.message),xid=u32::from_be_bytes(packet.header[4..8].try_into().unwrap()),relay_ip=%packet.giaddr,boot_stage=stage,architecture,route_mode=packet.route_mode(),$($fields)*,"DHCP request")
+                tracing::$level!(%mac,location,hostname,dhcp_message=message_name(packet.message),%xid,relay_ip=%packet.giaddr,boot_stage=stage,arch,route_mode=packet.route_mode(),$($fields)*,"DHCP request")
             };
         }
         let outcome = if let Some(client) = client {
-            reply(&packet, client, &config, server)
+            if packet.boot_mode_mismatch(client) {
+                shared.boot_mode_mismatches.fetch_add(1, Ordering::Relaxed);
+                request_log!(warn, configured=%client.boot_type,detected=stage,result="boot_mode_mismatch");
+                Ok(None)
+            } else {
+                reply(&packet, client, &config, server)
+            }
         } else {
             shared.unknown.fetch_add(1, Ordering::Relaxed);
             Ok(None)
         };
         match outcome {
             Ok(Some(response)) => {
+                if matches!(stage, "bios" | "uefi" | "ipxe") && response.boot_file.is_none() {
+                    request_log!(warn, result = "no_matching_boot_file");
+                }
                 if response.relay_option_omitted {
                     shared.errors.fetch_add(1, Ordering::Relaxed);
                     request_log!(warn, result = "relay_option_omitted");
                 }
                 match socket.send_to(&response.bytes, response.destination).await {
                     Ok(_) => {
+                        if config.logging.dhcp_packet_debug {
+                            tracing::debug!(direction="sent",%xid,%mac,location,hostname,dhcp_message=message_name(response.message),source_ip=%server,destination=%response.destination,ciaddr=%packet.ciaddr,yiaddr=%Ipv4Addr::new(response.bytes[16],response.bytes[17],response.bytes[18],response.bytes[19]),giaddr=%packet.giaddr,boot_stage=stage,arch,packet_size=response.bytes.len(),packet_hex=%hex(&response.bytes),"DHCP packet");
+                        }
                         shared.record_response(message_name(response.message));
                         request_log!(info,assigned_ip=%client.unwrap().ip,boot_file=?response.boot_file,result=message_name(response.message));
                     }
@@ -446,6 +478,15 @@ pub async fn serve(config: Arc<Config>, shared: Arc<Shared>) -> Result<()> {
         }
         shared.record_duration(start.elapsed().as_secs_f64());
     }
+}
+
+fn hex(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    use std::fmt::Write;
+    for byte in bytes {
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
 }
 
 pub fn message_name(value: u8) -> &'static str {
@@ -483,7 +524,10 @@ fn enable_pktinfo(socket: &UdpSocket) -> Result<()> {
 }
 
 #[cfg(target_os = "linux")]
-async fn receive_pktinfo(socket: &UdpSocket, buffer: &mut [u8]) -> Result<(usize, Ipv4Addr)> {
+async fn receive_pktinfo(
+    socket: &UdpSocket,
+    buffer: &mut [u8],
+) -> Result<(usize, Ipv4Addr, std::net::SocketAddr)> {
     use std::os::fd::AsRawFd;
     loop {
         socket.readable().await?;
@@ -496,7 +540,10 @@ async fn receive_pktinfo(socket: &UdpSocket, buffer: &mut [u8]) -> Result<(usize
                     iov_base: buffer.as_mut_ptr().cast(),
                     iov_len: buffer.len(),
                 };
+                let mut sender: libc::sockaddr_in = std::mem::zeroed();
                 let mut msg: libc::msghdr = std::mem::zeroed();
+                msg.msg_name = (&mut sender as *mut libc::sockaddr_in).cast();
+                msg.msg_namelen = std::mem::size_of_val(&sender) as libc::socklen_t;
                 msg.msg_iov = &mut iov;
                 msg.msg_iovlen = 1;
                 msg.msg_control = control.as_mut_ptr().cast();
@@ -513,9 +560,17 @@ async fn receive_pktinfo(socket: &UdpSocket, buffer: &mut [u8]) -> Result<(usize
                         let info = std::ptr::read_unaligned(
                             libc::CMSG_DATA(header).cast::<libc::in_pktinfo>(),
                         );
+                        if sender.sin_family != libc::AF_INET as libc::sa_family_t {
+                            return Err(std::io::Error::other("non-IPv4 sender"));
+                        }
+                        let source = SocketAddrV4::new(
+                            Ipv4Addr::from(sender.sin_addr.s_addr.to_ne_bytes()),
+                            u16::from_be(sender.sin_port),
+                        );
                         return Ok((
                             len as usize,
                             Ipv4Addr::from(info.ipi_spec_dst.s_addr.to_ne_bytes()),
+                            source.into(),
                         ));
                     }
                     header = libc::CMSG_NXTHDR(&msg, header);

@@ -59,6 +59,7 @@ pub struct Shared {
     pub responses: AtomicU64,
     pub errors: AtomicU64,
     pub unknown: AtomicU64,
+    pub boot_mode_mismatches: AtomicU64,
     sync_success: AtomicU64,
     sync_errors: AtomicU64,
     state_read_errors: AtomicU64,
@@ -147,10 +148,7 @@ pub async fn run_sync(config: Arc<Config>, shared: Arc<Shared>) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
         Err(error) => state_read_error(&shared, &error.into()),
     }
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(config.clients_source.timeout_seconds))
-        .build()
-    {
+    let client = match polling_client(config.clients_source.timeout_seconds) {
         Ok(client) => client,
         Err(error) => {
             shared.status.lock().unwrap().last_error = Some(error.to_string());
@@ -178,6 +176,14 @@ pub async fn run_sync(config: Arc<Config>, shared: Arc<Shared>) {
         ))
         .await;
     }
+}
+
+fn polling_client(timeout_seconds: u64) -> Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(timeout_seconds))
+        .user_agent(SERVER_HEADER)
+        .build()
+        .context("build polling HTTP client")
 }
 
 fn state_read_error(shared: &Shared, error: &anyhow::Error) {
@@ -348,6 +354,10 @@ async fn metrics(State(shared): State<Arc<Shared>>) -> impl IntoResponse {
         ("macmapd_responses_total", &shared.responses),
         ("macmapd_errors_total", &shared.errors),
         ("macmapd_unknown_clients_total", &shared.unknown),
+        (
+            "macmapd_boot_mode_mismatches_total",
+            &shared.boot_mode_mismatches,
+        ),
         ("macmapd_sync_success_total", &shared.sync_success),
         ("macmapd_sync_errors_total", &shared.sync_errors),
         ("macmapd_state_read_errors_total", &shared.state_read_errors),
@@ -486,13 +496,21 @@ mod tests {
     async fn invalid_remote_update_preserves_snapshot_and_saved_state() {
         let body = Arc::new(Mutex::new((
             StatusCode::OK,
-            String::from("dc1,host.example,uefi,AA:BB:CC:DD:EE:02,10.0.0.2,24,10.0.0.1\n"),
+            String::from(
+                "dc1,host.example,example.internal,uefi,1500,AA:BB:CC:DD:EE:02,10.0.0.2,24,10.0.0.1\n",
+            ),
         )));
         let response_body = body.clone();
+        let user_agent = Arc::new(Mutex::new(None));
+        let observed_user_agent = user_agent.clone();
         let app = Router::new().route(
             "/clients.csv",
-            get(move || {
+            get(move |headers: axum::http::HeaderMap| {
                 let body = response_body.lock().unwrap().clone();
+                *observed_user_agent.lock().unwrap() = headers
+                    .get(reqwest::header::USER_AGENT)
+                    .and_then(|value| value.to_str().ok())
+                    .map(str::to_owned);
                 async move { body }
             }),
         );
@@ -508,9 +526,10 @@ mod tests {
         config.clients_source.state_file = dir.join("clients.csv");
         config.clients_source.url = format!("http://{address}/clients.csv");
         let shared = Shared::new();
-        let client = reqwest::Client::new();
+        let client = polling_client(config.clients_source.timeout_seconds).unwrap();
         let mut cache = RemoteCache::default();
         poll(&client, &config, &shared, &mut cache).await.unwrap();
+        assert_eq!(user_agent.lock().unwrap().as_deref(), Some(SERVER_HEADER));
         let snapshot = shared.snapshot.read().unwrap().clone().unwrap();
         let saved = tokio::fs::read(&config.clients_source.state_file)
             .await

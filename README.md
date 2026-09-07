@@ -27,11 +27,36 @@ target/release/macmapd check-config --config examples/server.toml
 target/release/macmapd --config examples/server.toml
 ```
 
+Without arguments, `macmapd` reads `/etc/macmapd/config.toml`. Use `--config`
+only for a different path. On Unix, `SIGHUP` validates the same TOML path and
+replaces the current process in place, preserving its PID and reloading logging,
+listeners, polling settings, saved state, and the remote CSV. Invalid TOML is
+logged and the running process is retained.
+
 Before starting the server, replace the example addresses, CSV URL, and state
 path with your own values. On Linux, UDP/67 requires appropriate privileges. Use
 the [examples/macmapd.service](examples/macmapd.service) unit, which grants
 `CAP_NET_BIND_SERVICE` and creates `/var/lib/macmapd`. The binary is installed at
 `/usr/local/bin/macmapd`, and the configuration at `/etc/macmapd/config.toml`.
+
+For Podman, [examples/macmapd.container](examples/macmapd.container) is an
+equivalent Quadlet example. Place the file in `/etc/containers/systemd/`, then
+run `systemctl daemon-reload` and
+`systemctl start macmapd.service`. Quadlet-generated services cannot be enabled
+directly; the `[Install]` section makes the generator add the boot dependency.
+Enable periodic registry checks with
+`systemctl enable --now podman-auto-update.timer`. The Quadlet uses
+`AutoUpdate=registry`, so Podman pulls a changed `stable` image and restarts the
+generated service. `Pull=newer` also checks for a newer image whenever the
+service starts. Registry authentication, when required, must be configured for
+the root account running this system Quadlet.
+The container uses host networking and a read-only root filesystem, drops every
+capability, and restores only `CAP_NET_BIND_SERVICE`, which the non-root image
+needs to bind DHCP port 67. The main configuration is mounted read-only, while a
+bind-mounted host directory stores the cached CSV in `/var/lib/macmapd`; create
+that directory before starting the service. The `U` mount option makes it
+writable by the image's non-root user and therefore changes its host ownership.
+`systemctl reload macmapd.service` sends SIGHUP to macmapd.
 
 The server accepts requests from any relay and looks clients up by the MAC in
 `chaddr`. With a wildcard bind on Linux, the Server Identifier is derived from
@@ -49,19 +74,26 @@ level = "info"
 format = "json" # json or text
 disable_timestamp = false
 color = true    # applies to text format
+dhcp_packet_debug = false
 ```
 
 `level` accepts standard `tracing_subscriber::EnvFilter` expressions, such as
 `debug` or `macmapd=debug,tower_http=warn`. Use `format = "text"` for readable
 console output; `json` is generally more convenient for systemd and log
-aggregators. Setting `disable_timestamp = true` omits the date and time.
+aggregators. Setting `disable_timestamp = true` omits the date and time. With
+`level = "debug"` and `dhcp_packet_debug = true`, received and sent packets are
+logged with decoded fields and a full hexadecimal payload. This is verbose and
+should normally be enabled only while diagnosing DHCP traffic. XIDs use the
+tcpdump-compatible form `0x27e9542c`, and the architecture field is named `arch`.
 
-The CSV has seven fields and does not require a header (a header is also
-supported): `location,hostname,boot_type,mac,ip,prefix_length,gateway`.
+The CSV has nine fields and does not require a header (a header is also
+supported): `location,hostname,domain,boot_type,mtu,mac,ip,prefix_length,gateway`.
+Blank lines and lines beginning with `#` are ignored.
 
 ```csv
-dc1,host.example,uefi,AA:BB:CC:DD:EE:FF,10.20.0.10,24,10.20.0.1
-dc1,host.example,bios,AA:BB:CC:DD:EE:AA,10.20.0.11,24,10.20.0.1
+# Datacenter clients
+dc1,host.example,example.internal,uefi,1500,AA:BB:CC:DD:EE:FF,10.20.0.10,24,10.20.0.1
+dc1,host.example,example.internal,bios,9000,AA:BB:CC:DD:EE:AA,10.20.0.11,24,10.20.0.1
 ```
 
 Duplicate MAC or IP values reject the entire update; duplicate hostnames are
@@ -72,11 +104,19 @@ and gateway addresses, while `/32` is rejected. No lease database is maintained.
 When reassigning addresses, the operator must account for leases that may still be
 active for previous clients.
 
+Domain and interface MTU are returned from each client row as DHCP options 15
+and 26. MTU must be in the range 68..65535. `[client_options].timezone` defaults
+to `Etc/UTC` and is returned as DHCP option 101 when requested by the client.
+
 BIOS and UEFI clients receive a default gateway. iPXE and OS clients that request
 option 121 receive only the specific routes through the GW in their CSV record,
 without a default route. DNS, NTP, and boot resources must be reachable through
 those routes. Boot file profiles are configured separately for x86_64 and arm64
 and are independent of the server's architecture.
+An initial BIOS request is ignored when its CSV row requires `uefi`, and an
+initial UEFI request is ignored when the row requires `bios`. The mismatch is
+logged without sending OFFER, ACK, or NAK. Later iPXE and OS requests remain
+eligible for service.
 
 `/health` returns 200 when the DHCP socket is ready and a valid client snapshot is
 available; otherwise it returns 503. `/metrics` returns Prometheus text format;
@@ -84,12 +124,14 @@ hostname and location metric labels come from the CSV, and every metric name has
 the `macmapd_` prefix. Both endpoints include `Server: macmapd/<version>` and
 `X-App-Version: <version>` headers. The metrics payload also exposes
 `macmapd_build_info{version="..."}`. A valid saved CSV is used indefinitely while
-the source is unavailable. The main TOML file is read only at startup.
+the source is unavailable. The main TOML is reread after a valid Unix SIGHUP.
 
 Only HTTP 200 replaces the CSV; a cached HTTP 304 keeps the current snapshot.
 Other statuses, including 204 and 206, retain the previous data and report an
 error. An empty or header-only CSV delivered with HTTP 200 intentionally clears
 all assignments. A valid empty snapshot still satisfies `/health`.
+Polling requests use `User-Agent: macmapd/<version>`.
+BIOS/UEFI mismatches increment `macmapd_boot_mode_mismatches_total`.
 
 Client metric series expire after 24 hours without requests (cleanup runs at
 most once per minute during requests or scrapes). A returning series starts at
@@ -128,9 +170,8 @@ The runtime image is based on `gcr.io/distroless/cc-debian13:nonroot`. It has no
 shell or package manager, but includes glibc and CA certificates needed by the
 dynamically linked Rust binary and HTTPS CSV polling. The process runs as the
 standard distroless UID/GID `65532:65532`. When bind-mounting the state directory,
-make it writable by this UID. A Docker or Podman named volume is usually easier,
-but it must also be writable by the non-root process. Linux binaries target the
-Debian Trixie glibc environment or a compatible one.
+make it writable by this UID. Linux binaries target the Debian Trixie glibc
+environment or a compatible one.
 
 ```sh
 just build-amd64                # cargo-dist artifact for x86_64-unknown-linux-gnu

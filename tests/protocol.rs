@@ -27,14 +27,14 @@ fn wire(message: u8, options: &[(u8, &[u8])]) -> Vec<u8> {
 }
 
 fn answer(packet: &Packet, config: &Config) -> Option<macmapd::dhcp::Reply> {
+    answer_as(packet, config, "uefi")
+}
+
+fn answer_as(packet: &Packet, config: &Config, boot_type: &str) -> Option<macmapd::dhcp::Reply> {
     let clients = Clients::parse(include_str!("../examples/clients.csv")).unwrap();
-    reply(
-        packet,
-        clients.records.get(&packet.mac).unwrap(),
-        config,
-        SERVER,
-    )
-    .unwrap()
+    let mut client = clients.records.get(&packet.mac).unwrap().clone();
+    client.boot_type = boot_type.into();
+    reply(packet, &client, config, SERVER).unwrap()
 }
 
 fn response_options(bytes: &[u8]) -> BTreeMap<u8, Vec<u8>> {
@@ -95,7 +95,8 @@ fn route_matrix_and_architectures() {
             }
             let packet = Packet::parse(&wire(1, &input_options)).unwrap();
             assert_eq!(packet.stage(), (stage, architecture));
-            let response = answer(&packet, &config()).unwrap();
+            let configured_mode = if stage == "bios" { "bios" } else { "uefi" };
+            let response = answer_as(&packet, &config(), configured_mode).unwrap();
             let options = response_options(&response.bytes);
             let classless = requested && !matches!(stage, "bios" | "uefi");
             assert_eq!(
@@ -115,6 +116,34 @@ fn route_matrix_and_architectures() {
             }
         }
     }
+}
+
+#[test]
+fn boot_mode_mismatch_gets_no_address_but_ipxe_and_os_do() {
+    for (arch, configured) in [(&[0, 0][..], "uefi"), (&[0, 9][..], "bios")] {
+        let packet = Packet::parse(&wire(1, &[(93, arch), (60, b"PXEClient")])).unwrap();
+        assert!(answer_as(&packet, &config(), configured).is_none());
+    }
+    for options in [
+        vec![(77, &b"iPXE"[..]), (93, &[0, 9][..])],
+        vec![(60, &b"ordinary-os"[..])],
+    ] {
+        let packet = Packet::parse(&wire(1, &options)).unwrap();
+        assert!(answer_as(&packet, &config(), "bios").is_some());
+    }
+}
+
+#[test]
+fn per_client_domain_mtu_and_requested_timezone_are_returned() {
+    let packet = Packet::parse(&wire(1, &[(55, &[15, 26, 101])])).unwrap();
+    let response = answer(&packet, &config()).unwrap();
+    let options = response_options(&response.bytes);
+    assert_eq!(options[&15], b"example.internal");
+    assert_eq!(options[&26], 1500u16.to_be_bytes());
+    assert_eq!(options[&101], b"Etc/UTC");
+
+    let packet = Packet::parse(&wire(1, &[(55, &[15, 26])])).unwrap();
+    assert!(!response_options(&answer(&packet, &config()).unwrap().bytes).contains_key(&101));
 }
 
 #[test]

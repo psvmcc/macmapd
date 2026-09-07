@@ -12,11 +12,12 @@ level = "info"
 format = "text"
 disable_timestamp = false
 color = true
+dhcp_packet_debug = false
 
 [client_options]
 dns = ["10.10.0.53", "10.10.0.54"]
 ntp = ["10.10.0.123"]
-domain = "example.internal"
+timezone = "Etc/UTC"
 classless_routes = ["10.0.0.0/8", "172.16.0.0/12"]
 
 [boot]

@@ -66,8 +66,12 @@ client from an older version is not tracked.
 
 ## 3. Main Configuration
 
-Use TOML. Read the main file at startup; hot reload of this file is outside the
-first release. Only the client CSV is refreshed periodically.
+Use TOML. The default path is `/etc/macmapd/config.toml`; `--config` overrides it.
+On Unix, SIGHUP validates the selected file and then replaces the process image
+with the same executable and arguments. This preserves the PID while applying
+all settings, including listeners and logging. Invalid TOML leaves the current
+process running. The saved CSV is loaded and its remote source is polled
+immediately after the replacement.
 
 ```toml
 [dhcp]
@@ -83,11 +87,12 @@ level = "info"
 format = "text"
 disable_timestamp = false
 color = true
+dhcp_packet_debug = false
 
 [client_options]
 dns = ["10.10.0.53", "10.10.0.54"]
 ntp = ["10.10.0.123"]
-domain = "example.internal"
+timezone = "Etc/UTC"
 classless_routes = [
   "10.0.0.0/8",
   "172.16.0.0/12",
@@ -118,28 +123,30 @@ format, destination networks, and boot parameter values. `classless_routes`
 contains only networks; the next hop comes from the GW in each client's CSV
 record. Reject a `/0` route and an empty specific-route list in this configuration.
 The entire `[logging]` section is optional and defaults to `info`, JSON output,
-timestamps enabled, and color enabled for text output. When the section is present,
-all four fields are required.
+timestamps enabled, color enabled for text output, and DHCP packet dumps disabled.
+The `dhcp_packet_debug` field is optional and defaults to false.
 
 ## 4. Client CSV
 
-The format does not require a header:
+The format does not require a header. Ignore blank lines and lines whose first
+character is `#`:
 
 ```text
-location,hostname,boot_type,mac,ip,prefix_length,gateway
+location,hostname,domain,boot_type,mtu,mac,ip,prefix_length,gateway
 ```
 
 Example:
 
 ```csv
-dc1,host.name1,uefi,AA:BB:CC:DD:EE:FF,1.2.3.4,24,1.2.3.1
-dc1,host.name2,bios,AA:BB:CC:DD:EE:AA,1.2.3.5,24,1.2.3.1
+# Primary location
+dc1,host.name1,example.internal,uefi,1500,AA:BB:CC:DD:EE:FF,1.2.3.4,24,1.2.3.1
+dc1,host.name2,example.internal,bios,9000,AA:BB:CC:DD:EE:AA,1.2.3.5,24,1.2.3.1
 ```
 
 Validation rules:
 
-- Require exactly seven fields and valid location, MAC, IPv4, hostname, and
-  prefix length values.
+- Require exactly nine fields and valid location, MAC, IPv4, hostname, domain,
+  MTU, and prefix length values. MTU is 68..65535.
 - Normalize MAC addresses for case-insensitive lookup.
 - Accept `bios` or `uefi` for `boot_type`.
 - Reject the entire file if a MAC is duplicated.
@@ -162,7 +169,10 @@ request uses exactly one snapshot version.
 - Hostname: from the CSV, option 12.
 - DNS: from the main configuration, option 6.
 - NTP: from the main configuration, option 42.
-- Domain: from the main configuration, option 15.
+- Domain: from the CSV, option 15.
+- Interface MTU: from the CSV, option 26.
+- TZ database timezone: option 101 when requested; default `Etc/UTC` comes from
+  the main configuration. Do not use deprecated option 2.
 - GW: from the CSV, option 3 when default-route mode is selected.
 - Specific routes: option 121 when the corresponding route mode is selected.
 - Boot parameters: based on the current boot stage and architecture.
@@ -182,7 +192,8 @@ Classification order:
    used by iPXE.
 2. Detect PXE requests from client signals, including vendor class and
    architecture.
-3. For PXE, select BIOS or UEFI from the CSV; log conflicts with the detected mode.
+3. For initial PXE, require BIOS or UEFI to match the CSV. On mismatch, log the
+   event and send no DHCP reply. iPXE and OS requests are not subject to this check.
 4. Determine architecture from option 93, accounting for lists of values and
    compatibility with common UEFI x86-64 implementations. Fall back to the
    vendor-class `Arch:` value for both PXE and iPXE when option 93 is unavailable.
@@ -198,7 +209,7 @@ as `unknown`. If no suitable file exists, return network settings without a boot
 file and log the reason.
 
 For an initial PXE stage, select `bios_file` or `uefi_file` from the CSV
-`boot_type`, while logging any conflict with the mode detected from the request.
+`boot_type` after the detected mode has matched it.
 For iPXE, return the architecture-specific `ipxe_file`. This prevents sending the
 iPXE binary again during the iPXE stage. Do not return boot parameters to a
 regular OS.
@@ -280,7 +291,8 @@ series are:
 
 - `macmapd_build_info{version}`.
 - `macmapd_requests_total`, `macmapd_responses_total`,
-  `macmapd_errors_total`, and `macmapd_unknown_clients_total`.
+  `macmapd_errors_total`, `macmapd_unknown_clients_total`, and
+  `macmapd_boot_mode_mismatches_total`.
 - `macmapd_sync_success_total` and `macmapd_sync_errors_total`.
 - `macmapd_state_read_errors_total` and `macmapd_state_write_errors_total`.
 - `macmapd_clients`.
@@ -313,7 +325,7 @@ stage:
 
 ```text
 mac, location, hostname, dhcp_message, xid, relay_ip,
-boot_stage, architecture, assigned_ip,
+boot_stage, arch, assigned_ip,
 route_mode, boot_file, result
 ```
 
@@ -326,6 +338,11 @@ and containers.
 
 Warnings and errors carry client context directly, even when INFO spans are
 disabled. This includes boot-mode mismatches and unavailable boot files.
+Format `xid` as eight lowercase hexadecimal digits with a `0x` prefix. When
+`dhcp_packet_debug` is enabled with DEBUG logging, emit structured received/sent
+events containing addresses, flags, options, packet size, and the full hex body.
+
+HTTP CSV requests use `User-Agent: macmapd/<version>`.
 
 ## 10. Application Structure
 
@@ -417,7 +434,7 @@ privileges separately for network integration tests.
 ### Unit and Package Tests
 
 - TOML/CSV: valid data, duplicate MAC/IP, allowed duplicate hostnames, and malformed
-  rows.
+  rows; comments, per-client domains, and MTU bounds.
 - Route matrix for BIOS, UEFI, iPXE, and OS with and without option 121 requests.
 - Route encoding with different prefix lengths and client gateways.
 - Boot-file selection and detection of iPXE, UEFI x86-64, and ARM64.
@@ -425,6 +442,8 @@ privileges separately for network integration tests.
 - REQUEST in different states, requests to another server, INFORM, RELEASE, and
   DECLINE.
 - Snapshot replacement without mixing versions in a single reply.
+- XID formatting, the `arch` log field, polling User-Agent, timezone option 101,
+  and packet-debug output.
 
 ### Integration Tests
 
@@ -437,6 +456,7 @@ privileges separately for network integration tests.
 - Health/metrics with usable state and without data.
 - BIOS/UEFI/iPXE in a virtual environment and, where available, on real clients.
 - amd64 builds and container smoke tests.
+- Valid SIGHUP reload and rejection of an invalid replacement configuration.
 
 ## 14. Implementation Stages
 
@@ -448,8 +468,12 @@ privileges separately for network integration tests.
    boot-stage logging.
 4. Implement polling, atomic state persistence, recovery, and snapshot replacement.
 5. Implement HTTP health/metrics, operational logs, and graceful shutdown.
-6. Add the Dockerfile, amd64 build recipes, deployment example,
-   and systemd unit.
+6. Add the Dockerfile, amd64 build recipes, deployment example, systemd unit,
+   and a Podman Quadlet using host networking, a read-only root filesystem, and
+   only the `CAP_NET_BIND_SERVICE` capability. Bind-mount the host configuration
+   and state directory, use Quadlet's native `ReloadSignal=HUP` integration, and
+   opt the `stable` image into registry-based `podman auto-update`. Check for a
+   newer registry image on each service start as well.
 7. Run integration checks, document limitations, and verify acceptance criteria.
 
 ## 15. Acceptance Criteria
@@ -457,12 +481,16 @@ privileges separately for network integration tests.
 - Sockets listen on configured addresses, including an explicitly configured
   wildcard.
 - Requests are accepted from any relay; a known MAC receives its CSV assignment.
-- IP, mask, hostname, DNS, NTP, and domain match the configuration.
+- IP, mask, hostname, domain, and MTU match the CSV; DNS, NTP, and timezone match
+  the main configuration.
 - Duplicate IP/MAC values reject the CSV; duplicate hostnames are allowed.
-- BIOS/UEFI receive a default route and appropriate boot file.
+- Matching BIOS/UEFI clients receive a default route and appropriate boot file;
+  mismatched initial boot modes receive no response and are logged.
 - iPXE and OS clients requesting option 121 receive specific routes without a
   default route or option 3.
 - Every request logs a detected boot stage, or `unknown` with a reason.
+- Parsed request logs use a hexadecimal XID and the `arch` field; packet-debug
+  mode includes received and sent wire payloads.
 - Lease renewal works without a lease or conflict database.
 - A refresh error does not change active data; saved CSV state supports restart
   while the source is unavailable.
@@ -473,6 +501,8 @@ privileges separately for network integration tests.
 - `just check`, integration tests, and the automated amd64 build pass.
 - The container image starts with mounted configuration/state and passes the smoke
   test.
+- The no-argument command uses `/etc/macmapd/config.toml`; SIGHUP reloads a valid
+  selected configuration without changing PID.
 
 ## 16. Protocol References
 
@@ -481,6 +511,7 @@ privileges separately for network integration tests.
 - [RFC 3442 — Classless Static Routes](https://www.rfc-editor.org/rfc/rfc3442.html)
 - [RFC 3046 — Relay Agent Information Option](https://www.rfc-editor.org/rfc/rfc3046.html)
 - [RFC 4578 — PXE DHCP Options](https://www.rfc-editor.org/rfc/rfc4578.html)
+- [RFC 4833 — Timezone Options](https://www.rfc-editor.org/rfc/rfc4833.html)
 - [iPXE — DHCP configuration](https://ipxe.org/howto/dhcpd)
 
 During implementation, verify current architecture codes against the IANA registry

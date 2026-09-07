@@ -8,6 +8,8 @@ pub struct Client {
     pub mac: [u8; 6],
     pub boot_type: String,
     pub hostname: String,
+    pub domain: String,
+    pub mtu: u16,
     pub ip: Ipv4Addr,
     pub prefix_length: u8,
     pub gateway: Ipv4Addr,
@@ -23,6 +25,7 @@ impl Clients {
     pub fn parse(text: &str) -> Result<Self> {
         let mut reader = csv::ReaderBuilder::new()
             .has_headers(false)
+            .comment(Some(b'#'))
             .trim(csv::Trim::All)
             .from_reader(text.as_bytes());
         let mut clients = Self::default();
@@ -33,7 +36,9 @@ impl Clients {
                 && row.iter().eq([
                     "location",
                     "hostname",
+                    "domain",
                     "boot_type",
+                    "mtu",
                     "mac",
                     "ip",
                     "prefix_length",
@@ -60,14 +65,17 @@ impl Clients {
 }
 
 fn parse_client(row: &csv::StringRecord) -> Result<Client> {
-    ensure!(row.len() == 7, "expected exactly seven fields");
+    ensure!(row.len() == 9, "expected exactly nine fields");
     ensure!(!row[0].is_empty() && row[0].len() <= 64, "invalid location");
     ensure!(valid_hostname(&row[1]), "invalid hostname");
+    ensure!(valid_hostname(&row[2]), "invalid domain");
     ensure!(
-        matches!(&row[2], "bios" | "uefi"),
+        matches!(&row[3], "bios" | "uefi"),
         "boot_type must be bios or uefi"
     );
-    let pieces: Vec<_> = row[3].split(':').collect();
+    let mtu: u16 = row[4].parse().context("invalid MTU")?;
+    ensure!(mtu >= 68, "MTU must be 68..65535");
+    let pieces: Vec<_> = row[5].split(':').collect();
     ensure!(
         pieces.len() == 6 && pieces.iter().all(|part| part.len() == 2),
         "MAC must contain six colon-separated hex octets"
@@ -80,15 +88,15 @@ fn parse_client(row: &csv::StringRecord) -> Result<Client> {
         mac != [0; 6] && mac[0] & 1 == 0,
         "MAC must be a nonzero unicast address"
     );
-    let ip: Ipv4Addr = row[4].parse().context("invalid client IPv4")?;
-    let prefix_length: u8 = row[5].parse().context("invalid prefix length")?;
+    let ip: Ipv4Addr = row[6].parse().context("invalid client IPv4")?;
+    let prefix_length: u8 = row[7].parse().context("invalid prefix length")?;
     // /31 is a point-to-point subnet (RFC 3021): both addresses are usable, so
     // only the regular network/broadcast restrictions are skipped for /31.
     ensure!(
         (1..=31).contains(&prefix_length),
         "prefix must be 1..31; /32 is unsupported for Ethernet assignments"
     );
-    let gateway: Ipv4Addr = row[6].parse().context("invalid gateway IPv4")?;
+    let gateway: Ipv4Addr = row[8].parse().context("invalid gateway IPv4")?;
     ensure!(
         is_unicast(ip) && is_unicast(gateway),
         "client and gateway must be unicast IPv4 addresses"
@@ -115,7 +123,9 @@ fn parse_client(row: &csv::StringRecord) -> Result<Client> {
         location: row[0].into(),
         mac,
         hostname: row[1].into(),
-        boot_type: row[2].into(),
+        domain: row[2].into(),
+        boot_type: row[3].into(),
+        mtu,
         ip,
         prefix_length,
         gateway,
@@ -125,10 +135,12 @@ fn parse_client(row: &csv::StringRecord) -> Result<Client> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    const ROW: &str = "dc1,host.name,uefi,AA:BB:CC:DD:EE:FF,1.2.3.4,24,1.2.3.1\n";
+    const ROW: &str =
+        "dc1,host.name,example.internal,uefi,1500,AA:BB:CC:DD:EE:FF,1.2.3.4,24,1.2.3.1\n";
     #[test]
     fn duplicates_and_shared_hostname() {
-        let other = "dc1,host.name,bios,AA:BB:CC:DD:EE:AA,1.2.3.5,24,1.2.3.1\n";
+        let other =
+            "dc1,host.name,example.internal,bios,9000,AA:BB:CC:DD:EE:AA,1.2.3.5,24,1.2.3.1\n";
         assert_eq!(
             Clients::parse(&format!("{ROW}{other}"))
                 .unwrap()
@@ -146,6 +158,7 @@ mod tests {
             ("1.2.3.4", "1.2.3.255"),
             ("1.2.3.1", "1.2.4.1"),
             (",24,", ",32,"),
+            (",1500,", ",67,"),
             ("host.name", "bad_name"),
             ("dc1", ""),
         ] {
@@ -165,13 +178,17 @@ mod tests {
     fn optional_header_and_example() {
         assert_eq!(
             Clients::parse(&format!(
-                "location,hostname,boot_type,mac,ip,prefix_length,gateway\n{ROW}"
+                "# generated file\n\nlocation,hostname,domain,boot_type,mtu,mac,ip,prefix_length,gateway\n{ROW}# another client follows\n"
             ))
             .unwrap()
             .records
             .len(),
             1
         );
+        let client = Clients::parse(ROW).unwrap();
+        let client = client.records.values().next().unwrap();
+        assert_eq!(client.domain, "example.internal");
+        assert_eq!(client.mtu, 1500);
         assert_eq!(
             Clients::parse(include_str!("../examples/clients.csv"))
                 .unwrap()
