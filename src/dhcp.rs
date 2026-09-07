@@ -760,53 +760,6 @@ pub fn message_name(value: u8) -> &'static str {
     }
 }
 
-#[cfg(test)]
-mod packet_dump_tests {
-    use super::dhcp_packet_dump;
-
-    #[test]
-    fn decodes_bootp_options_relay_information_and_routes() {
-        let mut bytes = vec![0; 240];
-        bytes[0..4].copy_from_slice(&[1, 1, 6, 1]);
-        bytes[4..8].copy_from_slice(&0x5108bb30_u32.to_be_bytes());
-        bytes[8..10].copy_from_slice(&1_u16.to_be_bytes());
-        bytes[24..28].copy_from_slice(&[172, 19, 15, 2]);
-        bytes[28..34].copy_from_slice(&[0xb4, 0x96, 0x91, 0x39, 0x73, 0x4c]);
-        bytes[236..240].copy_from_slice(&[99, 130, 83, 99]);
-        bytes.extend_from_slice(&[
-            53, 1, 3, // DHCPREQUEST
-            55, 4, 1, 6, 26, 121, // Parameter request list
-            82, 7, 1, 3, b'l', b'a', b'n', 2, 0, // Relay information
-            121, 7, 16, 192, 168, 172, 19, 15, 2, // 192.168/16 via relay
-            255,
-        ]);
-
-        let dump = dhcp_packet_dump(&bytes);
-        for expected in [
-            "BOOTP/DHCP, Request",
-            "xid 0x5108bb30",
-            "Gateway-IP 172.19.15.2",
-            "Client-Ethernet-Address b4:96:91:39:73:4c",
-            "DHCP-Message Option 53, length 1: REQUEST",
-            "Subnet-Mask, Domain-Name-Server, MTU, Classless-Static-Route",
-            "Agent-Information Option 82",
-            "Circuit-ID SubOption 1, length 3: lan",
-            "Remote-ID SubOption 2, length 0:",
-            "Classless-Static-Route Option 121, length 7: 192.168.0.0/16:172.19.15.2",
-        ] {
-            assert!(dump.contains(expected), "missing {expected:?} in:\n{dump}");
-        }
-    }
-
-    #[test]
-    fn reports_short_payload_without_panicking() {
-        assert_eq!(
-            dhcp_packet_dump(&[1, 2, 3]),
-            "Malformed BOOTP/DHCP payload, length 3"
-        );
-    }
-}
-
 #[cfg(target_os = "linux")]
 fn enable_pktinfo(socket: &UdpSocket) -> Result<()> {
     use std::os::fd::AsRawFd;
@@ -886,5 +839,52 @@ async fn receive_pktinfo(
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
             other => return Ok(other?),
         }
+    }
+}
+
+#[cfg(test)]
+mod packet_dump_tests {
+    use super::dhcp_packet_dump;
+
+    #[test]
+    fn decodes_bootp_options_relay_information_and_routes() {
+        let mut bytes = vec![0; 240];
+        bytes[0..4].copy_from_slice(&[1, 1, 6, 1]);
+        bytes[4..8].copy_from_slice(&0x5108bb30_u32.to_be_bytes());
+        bytes[8..10].copy_from_slice(&1_u16.to_be_bytes());
+        bytes[24..28].copy_from_slice(&[172, 19, 15, 2]);
+        bytes[28..34].copy_from_slice(&[0xb4, 0x96, 0x91, 0x39, 0x73, 0x4c]);
+        bytes[236..240].copy_from_slice(&[99, 130, 83, 99]);
+        bytes.extend_from_slice(&[
+            53, 1, 3, // DHCPREQUEST
+            55, 4, 1, 6, 26, 121, // Parameter request list
+            82, 7, 1, 3, b'l', b'a', b'n', 2, 0, // Relay information
+            121, 7, 16, 192, 168, 172, 19, 15, 2, // 192.168/16 via relay
+            255,
+        ]);
+
+        let dump = dhcp_packet_dump(&bytes);
+        for expected in [
+            "BOOTP/DHCP, Request",
+            "xid 0x5108bb30",
+            "Gateway-IP 172.19.15.2",
+            "Client-Ethernet-Address b4:96:91:39:73:4c",
+            "DHCP-Message Option 53, length 1: REQUEST",
+            "Subnet-Mask, Domain-Name-Server, MTU, Classless-Static-Route",
+            "Agent-Information Option 82",
+            "Circuit-ID SubOption 1, length 3: lan",
+            "Remote-ID SubOption 2, length 0:",
+            "Classless-Static-Route Option 121, length 7: 192.168.0.0/16:172.19.15.2",
+        ] {
+            assert!(dump.contains(expected), "missing {expected:?} in:\n{dump}");
+        }
+    }
+
+    #[test]
+    fn reports_short_payload_without_panicking() {
+        assert_eq!(
+            dhcp_packet_dump(&[1, 2, 3]),
+            "Malformed BOOTP/DHCP payload, length 3"
+        );
     }
 }
