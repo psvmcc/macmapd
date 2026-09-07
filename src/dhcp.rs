@@ -8,6 +8,13 @@ use std::{
 };
 use tokio::net::UdpSocket;
 
+fn format_mac(mac: &[u8; 6]) -> String {
+    mac.iter()
+        .map(|v| format!("{v:02x}"))
+        .collect::<Vec<_>>()
+        .join(":")
+}
+
 #[derive(Debug)]
 pub struct Packet {
     pub header: Vec<u8>,
@@ -121,12 +128,9 @@ impl Packet {
                     }
                 })
             });
-        if ipxe {
-            return ("ipxe", arch.map(|a| a.1).unwrap_or("unknown"));
-        }
         let vendor = self.options.get(&60).map(Vec::as_slice).unwrap_or_default();
         let pxe = vendor.starts_with(b"PXEClient");
-        if pxe || arch.is_some() {
+        if ipxe || pxe || arch.is_some() {
             let fallback = std::str::from_utf8(vendor)
                 .ok()
                 .and_then(|s| s.split("Arch:").nth(1))
@@ -138,7 +142,8 @@ impl Packet {
                     11 => Some(("uefi", "arm64")),
                     _ => None,
                 });
-            return arch.or(fallback).unwrap_or(("unknown", "unknown"));
+            let detected = arch.or(fallback).unwrap_or(("unknown", "unknown"));
+            return if ipxe { ("ipxe", detected.1) } else { detected };
         }
         ("os", arch.map(|a| a.1).unwrap_or("unknown"))
     }
@@ -159,6 +164,7 @@ pub struct Reply {
     pub destination: SocketAddrV4,
     pub message: u8,
     pub boot_file: Option<String>,
+    pub relay_option_omitted: bool,
 }
 
 fn option(out: &mut Vec<u8>, code: u8, value: &[u8]) {
@@ -264,7 +270,7 @@ pub fn reply(
         let (stage, architecture) = packet.stage();
         if matches!(stage, "bios" | "uefi" | "ipxe") {
             if stage != "ipxe" && stage != client.boot_type {
-                tracing::warn!(detected=stage, configured=%client.boot_type, "boot mode mismatch");
+                tracing::warn!(mac=%format_mac(&client.mac),location=%client.location,hostname=%client.hostname,boot_stage=stage,architecture,detected=stage, configured=%client.boot_type, "boot mode mismatch");
             }
             if let Some(files) = config.boot.architectures.get(architecture) {
                 boot_file = if stage == "ipxe" {
@@ -287,7 +293,7 @@ pub fn reply(
                 );
                 option(&mut bytes, 67, file.as_bytes());
             } else {
-                tracing::warn!(stage, architecture, "no matching boot file");
+                tracing::warn!(mac=%format_mac(&client.mac),location=%client.location,hostname=%client.hostname,boot_stage=stage, architecture, "no matching boot file");
             }
         }
     } else {
@@ -296,17 +302,24 @@ pub fn reply(
             bytes[10] |= 0x80;
         }
     }
-    if !packet.giaddr.is_unspecified()
-        && let Some(relay) = packet.options.get(&82)
-    {
-        option(&mut bytes, 82, relay);
-    }
-    bytes.push(255);
     let maximum = packet
         .options
         .get(&57)
         .map(|v| usize::from(u16::from_be_bytes([v[0], v[1]])).max(576))
         .unwrap_or(576);
+    let mut relay_option_omitted = false;
+    if !packet.giaddr.is_unspecified()
+        && let Some(relay) = packet.options.get(&82)
+    {
+        let encoded_size = relay.len() + relay.len().div_ceil(255) * 2;
+        // RFC 3046 section 2.2: omit the entire relay option if it does not fit.
+        if bytes.len() + encoded_size < maximum {
+            option(&mut bytes, 82, relay);
+        } else {
+            relay_option_omitted = true;
+        }
+    }
+    bytes.push(255);
     ensure!(
         bytes.len() <= maximum,
         "response exceeds client maximum DHCP size ({maximum})"
@@ -326,6 +339,7 @@ pub fn reply(
         destination,
         message,
         boot_file,
+        relay_option_omitted,
     }))
 }
 
@@ -385,13 +399,13 @@ pub async fn serve(config: Arc<Config>, shared: Arc<Shared>) -> Result<()> {
             packet.route_mode(),
             message_name(packet.message),
         );
-        let mac = packet
-            .mac
-            .iter()
-            .map(|v| format!("{v:02x}"))
-            .collect::<Vec<_>>()
-            .join(":");
-        let span = tracing::info_span!("dhcp",%mac,location,hostname,dhcp_message=message_name(packet.message),xid=u32::from_be_bytes(packet.header[4..8].try_into().unwrap()),relay_ip=%packet.giaddr,boot_stage=stage,architecture,route_mode=packet.route_mode());
+        let mac = format_mac(&packet.mac);
+        // Put context on each event: an INFO span is disabled at WARN/ERROR levels.
+        macro_rules! request_log {
+            ($level:ident, $($fields:tt)*) => {
+                tracing::$level!(%mac,location,hostname,dhcp_message=message_name(packet.message),xid=u32::from_be_bytes(packet.header[4..8].try_into().unwrap()),relay_ip=%packet.giaddr,boot_stage=stage,architecture,route_mode=packet.route_mode(),$($fields)*,"DHCP request")
+            };
+        }
         let outcome = if let Some(client) = client {
             reply(&packet, client, &config, server)
         } else {
@@ -400,23 +414,34 @@ pub async fn serve(config: Arc<Config>, shared: Arc<Shared>) -> Result<()> {
         };
         match outcome {
             Ok(Some(response)) => {
+                if response.relay_option_omitted {
+                    shared.errors.fetch_add(1, Ordering::Relaxed);
+                    request_log!(warn, result = "relay_option_omitted");
+                }
                 match socket.send_to(&response.bytes, response.destination).await {
                     Ok(_) => {
                         shared.record_response(message_name(response.message));
-                        tracing::info!(parent:&span,assigned_ip=%client.unwrap().ip,boot_file=?response.boot_file,result=message_name(response.message),"DHCP request");
+                        request_log!(info,assigned_ip=%client.unwrap().ip,boot_file=?response.boot_file,result=message_name(response.message));
                     }
                     Err(error) => {
                         shared.errors.fetch_add(1, Ordering::Relaxed);
-                        tracing::error!(parent:&span,%error,result="send_error","DHCP request");
+                        request_log!(error,%error,result="send_error");
                     }
                 }
             }
             Ok(None) => {
-                tracing::info!(parent:&span,result=if client.is_none(){"unknown_or_unavailable"}else{"no_response"},"DHCP request")
+                request_log!(
+                    info,
+                    result = if client.is_none() {
+                        "unknown_or_unavailable"
+                    } else {
+                        "no_response"
+                    }
+                )
             }
             Err(error) => {
                 shared.errors.fetch_add(1, Ordering::Relaxed);
-                tracing::warn!(parent:&span,%error,result="error","DHCP request");
+                request_log!(warn,%error,result="error");
             }
         }
         shared.record_duration(start.elapsed().as_secs_f64());

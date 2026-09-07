@@ -14,7 +14,13 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  verify:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
   release:
+    needs: verify
     name: Publish release image and artifacts
     runs-on: ubuntu-latest
     steps:
@@ -32,6 +38,22 @@ jobs:
             exit 1
           fi
 
+      - name: Verify release version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: python3 scripts/check-release-version.py "$RELEASE_TAG"
+
+      - name: Install just
+        uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
+      - name: Build cargo-dist release artifacts
+        env:
+          CONTAINER_ENGINE: docker
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: just dist-build
+
       - name: Set image name and version
         id: image
         shell: bash
@@ -41,13 +63,6 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract image metadata
         id: meta
@@ -62,33 +77,50 @@ jobs:
             org.opencontainers.image.version=${{ steps.image.outputs.version }}
             org.opencontainers.image.revision=${{ github.sha }}
 
-      - name: Build and push release images
+      - name: Build release image locally
         uses: docker/build-push-action@v7
         with:
           context: .
           file: ./Dockerfile
           platforms: linux/amd64
-          push: true
+          load: true
+          push: false
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Install just
-        uses: taiki-e/install-action@v2
-        with:
-          tool: just
-
-      - name: Build cargo-dist release artifacts
+      - name: Smoke-test release image
         env:
-          CONTAINER_ENGINE: docker
-        run: just dist-build
+          RELEASE_IMAGE: ${{ steps.image.outputs.name }}:${{ github.ref_name }}
+        run: just docker-smoke "$RELEASE_IMAGE"
+
+      - name: Verify release files exist
+        run: |
+          test -s target/distrib/macmapd-x86_64-unknown-linux-gnu.tar.xz
+          test -s target/distrib/macmapd-x86_64-unknown-linux-gnu.tar.xz.sha256
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push tested release image
+        env:
+          IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          while IFS= read -r tag; do
+            test -z "$tag" || docker push "$tag"
+          done <<< "$IMAGE_TAGS"
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v3
         with:
           name: macmapd ${{ github.ref_name }}
           generate_release_notes: true
+          fail_on_unmatched_files: true
           files: |
             target/distrib/*.tar.xz
             target/distrib/*.sha256

@@ -24,6 +24,11 @@ listen_ip = "0.0.0.0"
 lease_seconds = 3600
 [http]
 listen = "0.0.0.0:8080"
+[logging]
+level = "warn"
+format = "json"
+disable_timestamp = true
+color = false
 [client_options]
 dns = ["10.20.0.53"]
 ntp = ["10.20.0.123"]
@@ -66,6 +71,20 @@ start_server
 "$engine" run --rm --network "$smoke_name" \
     --mount "type=bind,src=$script_dir/relay-smoke.py,dst=/relay-smoke.py,readonly" \
     docker.io/library/python:3.14-alpine python /relay-smoke.py "$smoke_name"
+"$engine" logs "$smoke_name" > "$smoke_dir/server.log" 2>&1
+"$engine" run --rm --network none \
+    --mount "type=bind,src=$smoke_dir/server.log,dst=/server.log,readonly" \
+    docker.io/library/python:3.14-alpine python -c '
+import json
+events = [json.loads(line)["fields"] for line in open("/server.log") if line.strip()]
+for key, value in (("result", "relay_option_omitted"), ("message", "boot mode mismatch"), ("message", "no matching boot file")):
+    event = next(e for e in events if e.get(key) == value)
+    assert event["location"] == "smoke", event
+    assert event["hostname"] == "smoke.example", event
+    assert event["mac"] == "aa:bb:cc:dd:ee:ff", event
+    assert event["boot_stage"] in ("bios", "uefi"), event
+print("PASS: WARN-level events retain client context")
+'
 test -s "$smoke_dir/state/clients.csv"
 "$engine" stop "$smoke_name-source" >/dev/null
 "$engine" rm -f "$smoke_name" >/dev/null

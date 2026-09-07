@@ -47,4 +47,47 @@ with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             assert 121 in options and 3 not in options
             assert options[121] == bytes([8, 10, 10, 20, 0, 1])
             assert (67 in options) == (stage == "ipxe")
-print("PASS: Linux wildcard destination metadata, relay replies, UEFI/iPXE/OS routes")
+
+        # Complete SELECTING over the real server socket; the reply must arrive
+        # at this relay's UDP/67, not at a substituted ephemeral test port.
+        packet[242] = 3
+        packet.pop()
+        packet.extend(bytes([50, 4]) + response[16:20])
+        packet.extend(bytes([54, 4]) + options[54])
+        packet.append(255)
+        sock.sendto(packet, (server, 67))
+        ack, _ = sock.recvfrom(2048)
+        assert ack[4:8] == packet[4:8]
+        assert ack[16:20] == socket.inet_aton("10.20.0.10")
+        assert ack[240:243] == bytes([53, 1, 5]), ack[240:243]
+
+    # A large but valid relay option must not suppress OFFER. The long client
+    # identifier ensures the reply would exceed 576 bytes if option 82 echoed.
+    packet = bytearray(240)
+    packet[:3] = bytes([1, 1, 6])
+    packet[24:28] = socket.inet_aton(relay)
+    packet[28:34] = bytes.fromhex("aabbccddeeff")
+    packet[236:240] = bytes([99, 130, 83, 99])
+    packet.extend(bytes([53, 1, 1, 93, 2, 0, 9, 61, 64]) + b"a" * 64)
+    packet.extend(bytes([82, 255, 1, 253]) + b"c" * 253)
+    packet.append(255)
+    sock.sendto(packet, (server, 67))
+    offer, _ = sock.recvfrom(2048)
+    assert offer[240:243] == bytes([53, 1, 2])
+    assert len(offer) <= 576
+    pos = 240
+    while offer[pos] != 255:
+        code = offer[pos]
+        pos += 1
+        if code == 0:
+            continue
+        assert code != 82
+        pos += 1 + offer[pos]
+    # Exercise warnings emitted inside reply(), with INFO logging disabled.
+    for architecture in (0, 11):
+        packet = packet[:240]
+        packet.extend(bytes([53, 1, 1, 93, 2, 0, architecture, 255]))
+        sock.sendto(packet, (server, 67))
+        offer, _ = sock.recvfrom(2048)
+        assert offer[240:243] == bytes([53, 1, 2])
+print("PASS: Linux wildcard metadata, relay DISCOVER/REQUEST, UEFI/iPXE/OS routes")

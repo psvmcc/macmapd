@@ -37,7 +37,10 @@ test:
 test-integration:
     cargo test --locked --test integration --test protocol
 
-check: fmt-check lint test
+test-release:
+    python3 -B -m unittest discover -s tests -p 'test_release_*.py'
+
+check: fmt-check lint test test-release
 
 docker-build-amd64:
     docker buildx build --platform linux/amd64 --load --tag '{{image}}:{{tag}}-amd64' .

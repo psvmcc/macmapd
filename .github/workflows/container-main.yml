@@ -14,7 +14,13 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  verify:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
   publish:
+    needs: verify
     name: Build and publish latest
     runs-on: ubuntu-latest
     steps:
@@ -47,14 +53,26 @@ jobs:
             org.opencontainers.image.version=latest
             org.opencontainers.image.revision=${{ github.sha }}
 
-      - name: Build and push latest image
+      - name: Build latest image locally
         uses: docker/build-push-action@v7
         with:
           context: .
           file: ./Dockerfile
           platforms: linux/amd64
-          push: true
+          load: true
+          push: false
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Smoke-test latest image
+        env:
+          CONTAINER_ENGINE: docker
+          LATEST_IMAGE: ${{ steps.image.outputs.name }}:latest
+        run: sh scripts/docker-smoke.sh "$LATEST_IMAGE"
+
+      - name: Push tested latest image
+        env:
+          LATEST_IMAGE: ${{ steps.image.outputs.name }}:latest
+        run: docker push "$LATEST_IMAGE"

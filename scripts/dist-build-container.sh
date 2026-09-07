@@ -5,6 +5,10 @@ target=${1:?Usage: dist-build-container.sh TARGET}
 engine=${CONTAINER_ENGINE:-podman}
 rust_image=${DIST_RUST_IMAGE:-docker.io/library/rust:1.98.0-trixie}
 dist_version=${CARGO_DIST_VERSION:-0.32.0}
+release_tag=${RELEASE_TAG:-}
+if [ -n "$release_tag" ]; then
+    python3 "$(dirname -- "$0")/check-release-version.py" "$release_tag"
+fi
 
 case "$target" in
     x86_64-unknown-linux-gnu) platform=${DIST_AMD64_RUNNER_PLATFORM:-linux/amd64} ;;
@@ -29,5 +33,9 @@ repo_dir=$(CDPATH= cd -- "$script_dir/.." && pwd)
         if ! command -v dist >/dev/null 2>&1 || [ "$(dist --version)" != "cargo-dist '"$dist_version"'" ]; then
             cargo install cargo-dist --locked --version '"$dist_version"'
         fi
-        dist build --artifacts=local --target "$1"
-    ' sh "$target"
+        if [ -n "$2" ]; then
+            dist build --artifacts=local --target "$1" --tag "$2"
+        else
+            dist build --artifacts=local --target "$1"
+        fi
+    ' sh "$target" "$release_tag"

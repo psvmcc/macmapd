@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  workflow_call:
   push:
     branches:
       - '**'
@@ -45,3 +46,12 @@ jobs:
 
       - name: Build release binary
         run: just build-release
+
+      - name: Build amd64 container
+        env:
+          CONTAINER_ENGINE: docker
+          TAG: ci
+        run: just container-build
+
+      - name: Test real DHCP server and state recovery
+        run: just docker-smoke macmapd:ci-amd64

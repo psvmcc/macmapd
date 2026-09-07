@@ -16,12 +16,32 @@ use std::{
         Arc, Mutex, RwLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 const MAX_CSV_BYTES: usize = 16 * 1024 * 1024;
 const SERVER_HEADER: &str = concat!("macmapd/", env!("CARGO_PKG_VERSION"));
 type RequestLabels = (String, String, String, String, String);
+const METRIC_IDLE_TTL: Duration = Duration::from_secs(24 * 3600);
+
+#[derive(Default)]
+struct RequestMetrics {
+    series: BTreeMap<RequestLabels, (u64, Instant)>,
+    last_pruned: Option<Instant>,
+}
+
+impl RequestMetrics {
+    fn prune(&mut self, now: Instant) {
+        if self
+            .last_pruned
+            .is_none_or(|last| now.duration_since(last) >= Duration::from_secs(60))
+        {
+            self.series
+                .retain(|_, (_, seen)| now.duration_since(*seen) < METRIC_IDLE_TTL);
+            self.last_pruned = Some(now);
+        }
+    }
+}
 
 #[derive(Default)]
 struct SyncStatus {
@@ -44,7 +64,7 @@ pub struct Shared {
     state_read_errors: AtomicU64,
     state_write_errors: AtomicU64,
     status: Mutex<SyncStatus>,
-    request_labels: Mutex<BTreeMap<RequestLabels, u64>>,
+    request_labels: Mutex<RequestMetrics>,
     response_labels: Mutex<BTreeMap<String, u64>>,
     durations: Mutex<(u64, f64)>,
 }
@@ -70,7 +90,12 @@ impl Shared {
             route.into(),
             message.into(),
         );
-        *self.request_labels.lock().unwrap().entry(key).or_default() += 1;
+        let now = Instant::now();
+        let mut metrics = self.request_labels.lock().unwrap();
+        metrics.prune(now);
+        let entry = metrics.series.entry(key).or_insert((0, now));
+        entry.0 += 1;
+        entry.1 = now;
     }
 
     pub fn record_response(&self, message: &str) {
@@ -189,6 +214,12 @@ async fn poll(
         return Ok(());
     }
     response.error_for_status_ref()?;
+    if response.status() != reqwest::StatusCode::OK {
+        bail!(
+            "expected HTTP 200 or cached 304, received {}",
+            response.status()
+        );
+    }
     if response
         .content_length()
         .is_some_and(|length| length > MAX_CSV_BYTES as u64)
@@ -356,9 +387,12 @@ async fn metrics(State(shared): State<Arc<Shared>>) -> impl IntoResponse {
     );
     drop(status);
     text.push_str("# TYPE macmapd_client_requests_total counter\n");
-    for ((location, hostname, stage, route, message), count) in
-        shared.request_labels.lock().unwrap().iter()
-    {
+    let request_series = {
+        let mut metrics = shared.request_labels.lock().unwrap();
+        metrics.prune(Instant::now());
+        metrics.series.clone()
+    };
+    for ((location, hostname, stage, route, message), (count, _)) in &request_series {
         let _ = writeln!(
             text,
             "macmapd_client_requests_total{{location=\"{}\",hostname=\"{}\",stage=\"{}\",route=\"{}\",message=\"{}\"}} {count}",
@@ -450,8 +484,9 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_remote_update_preserves_snapshot_and_saved_state() {
-        let body = Arc::new(Mutex::new(String::from(
-            "dc1,host.example,uefi,AA:BB:CC:DD:EE:02,10.0.0.2,24,10.0.0.1\n",
+        let body = Arc::new(Mutex::new((
+            StatusCode::OK,
+            String::from("dc1,host.example,uefi,AA:BB:CC:DD:EE:02,10.0.0.2,24,10.0.0.1\n"),
         )));
         let response_body = body.clone();
         let app = Router::new().route(
@@ -480,18 +515,33 @@ mod tests {
         let saved = tokio::fs::read(&config.clients_source.state_file)
             .await
             .unwrap();
-        *body.lock().unwrap() = "broken CSV".into();
-        assert!(poll(&client, &config, &shared, &mut cache).await.is_err());
-        assert!(Arc::ptr_eq(
-            &snapshot,
-            shared.snapshot.read().unwrap().as_ref().unwrap()
-        ));
-        assert_eq!(
-            tokio::fs::read(&config.clients_source.state_file)
-                .await
-                .unwrap(),
-            saved
-        );
+        for (status, text) in [
+            (StatusCode::OK, "broken CSV"),
+            (StatusCode::NO_CONTENT, ""),
+            (
+                StatusCode::PARTIAL_CONTENT,
+                std::str::from_utf8(&saved).unwrap(),
+            ),
+            (StatusCode::FOUND, ""),
+        ] {
+            *body.lock().unwrap() = (status, text.into());
+            assert!(
+                poll(&client, &config, &shared, &mut cache).await.is_err(),
+                "{status}"
+            );
+            assert!(Arc::ptr_eq(
+                &snapshot,
+                shared.snapshot.read().unwrap().as_ref().unwrap()
+            ));
+            assert_eq!(
+                tokio::fs::read(&config.clients_source.state_file)
+                    .await
+                    .unwrap(),
+                saved
+            );
+        }
+        *body.lock().unwrap() = (StatusCode::NOT_MODIFIED, String::new());
+        poll(&client, &config, &shared, &mut cache).await.unwrap();
         server.abort();
         tokio::fs::remove_file(&config.clients_source.state_file)
             .await
@@ -512,6 +562,25 @@ mod tests {
         );
         tokio::fs::remove_file(path).await.unwrap();
         tokio::fs::remove_dir(dir).await.unwrap();
+    }
+
+    #[test]
+    fn idle_client_metrics_expire_without_resetting_global_counters() {
+        let shared = Shared::new();
+        shared.record_request("old", "retired", "os", "classless", "discover");
+        shared.record_request("current", "active", "os", "classless", "discover");
+        let mut metrics = shared.request_labels.lock().unwrap();
+        let now = Instant::now();
+        for (labels, (_, seen)) in &mut metrics.series {
+            if labels.0 == "old" {
+                *seen = now - METRIC_IDLE_TTL;
+            }
+        }
+        metrics.last_pruned = None;
+        metrics.prune(now);
+        assert_eq!(metrics.series.len(), 1);
+        assert_eq!(metrics.series.keys().next().unwrap().0, "current");
+        assert_eq!(shared.requests.load(Ordering::Relaxed), 2);
     }
 
     #[test]

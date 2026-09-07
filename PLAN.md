@@ -37,6 +37,8 @@ binary, container, CI, and release builds currently target amd64 only.
 - Ignore requests addressed to another DHCP server. Do not send a NAK for every
   unknown or inapplicable request.
 - Handle relay option 82 correctly without using it as an access restriction.
+- If option 82 alone does not fit in the response, omit it entirely and record
+  a warning/error counter as specified by RFC 3046; still send the reply.
 - Validate packet lengths, DHCP options, the magic cookie, and field values.
   Account for response-size limits and long route lists.
 
@@ -182,7 +184,8 @@ Classification order:
    architecture.
 3. For PXE, select BIOS or UEFI from the CSV; log conflicts with the detected mode.
 4. Determine architecture from option 93, accounting for lists of values and
-   compatibility with common UEFI x86-64 implementations.
+   compatibility with common UEFI x86-64 implementations. Fall back to the
+   vendor-class `Arch:` value for both PXE and iPXE when option 93 is unavailable.
 5. Use the `x86_64` profile for legacy BIOS. This identifies the boot-file profile,
    not necessarily the CPU bitness.
 6. If no bootloader signals are present, classify the request as `os`. Do not
@@ -251,6 +254,11 @@ Use valid stale state without automatic expiration. Support `ETag` and
 not require rewriting the file. Report state read and write failures in logs and
 metrics.
 
+Only HTTP 200 can replace the snapshot; accept 304 only with a downloaded cache.
+Reject all other statuses, including 204 and 206, without altering memory or disk.
+An empty/header-only CSV in a 200 response intentionally clears assignments and
+remains a valid snapshot for health checks.
+
 ## 9. HTTP, Logs, and Metrics
 
 ### GET /health
@@ -292,6 +300,10 @@ CSV. Identical hostnames are aggregated when all other labels match. For unknown
 MAC addresses, use fixed `hostname="unknown"` and `location="unknown"` labels,
 not a name supplied by the request. MAC is not required as a label.
 
+Expire client-label series after 24 hours of inactivity, checking at most once
+per minute on requests or scrapes. Keep aggregate counters unchanged. Copy the
+series under the mutex and format the response after releasing it.
+
 ### Logging
 
 Logging is configured by level, `json` or `text` format, optional timestamps, and
@@ -311,6 +323,9 @@ If parsing fails before request fields can be trusted, log the parsing error wit
 `boot_stage="unknown"` and `result="malformed"`. Also log startup, socket binding,
 CSV updates, state errors, and shutdown. Send logs to stdout/stderr for systemd
 and containers.
+
+Warnings and errors carry client context directly, even when INFO spans are
+disabled. This includes boot-mode mismatches and unavailable boot files.
 
 ## 10. Application Structure
 
@@ -364,6 +379,12 @@ versions are locked in `Cargo.lock`, while the Rust version is pinned in
 - Use the repository `GITHUB_TOKEN` with `packages: write` and `contents: write`
   permissions for publishing jobs.
 
+Both publishing workflows depend on reusable CI, including the real-container
+smoke test. Require stable tags to match Cargo.toml and Cargo.lock, and pass the
+explicit release tag to cargo-dist. Build archives and smoke-test the exact image
+before pushing it; fail when expected release files are missing. Publishing to
+GHCR and GitHub is not an atomic transaction.
+
 ## 12. Justfile
 
 | Recipe | Purpose |
@@ -378,7 +399,8 @@ versions are locked in `Cargo.lock`, while the Rust version is pinned in
 | `just lint` | Run Clippy with warnings treated as errors |
 | `just test` | Run unit tests |
 | `just test-integration` | Test DHCP, polling, and state recovery |
-| `just check` | Run fmt-check, lint, and unit tests |
+| `just test-release` | Validate release-version checks with Python 3.11+ |
+| `just check` | Run fmt-check, lint, Rust unit tests, and release-validation tests |
 | `just container-build` | Build the amd64 image with the configured engine |
 | `just container-smoke IMAGE` | Smoke-test with the configured engine |
 | `just docker-build-amd64` | Build a local amd64 image |

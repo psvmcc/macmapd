@@ -5,8 +5,10 @@ use macmapd::{
 };
 use std::net::Ipv4Addr;
 
-#[tokio::test]
-async fn relay_discover_request_over_udp() {
+// Wire-level exchange. The container smoke test exercises dhcp::serve itself
+// and receives replies on the actual relay port 67.
+#[test]
+fn relay_discover_request_packets() {
     let config: Config = toml::from_str(include_str!("../examples/server.toml")).unwrap();
     let clients = Clients::parse(include_str!("../examples/clients.csv")).unwrap();
     let client = clients.records.values().next().unwrap();
@@ -17,30 +19,21 @@ async fn relay_discover_request_over_udp() {
     bytes[28..34].copy_from_slice(&client.mac);
     bytes[236..240].copy_from_slice(&[99, 130, 83, 99]);
     bytes.extend([53, 1, 1, 55, 1, 121, 255]);
-    let relay = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
-    let server = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
-    relay
-        .send_to(&bytes, server.local_addr().unwrap())
-        .await
-        .unwrap();
-    let mut buffer = [0; 2048];
-    let (len, peer) = server.recv_from(&mut buffer).await.unwrap();
-    let request = Packet::parse(&buffer[..len]).unwrap();
+    let request = Packet::parse(&bytes).unwrap();
     let offer = reply(&request, client, &config, Ipv4Addr::LOCALHOST)
         .unwrap()
         .unwrap();
     assert_eq!(offer.destination.ip(), &Ipv4Addr::LOCALHOST);
     assert_eq!(offer.destination.port(), 67);
     assert_eq!(&offer.bytes[16..20], &client.ip.octets());
-    server.send_to(&offer.bytes, peer).await.unwrap();
-    let (len, _) = relay.recv_from(&mut buffer).await.unwrap();
-    assert_eq!(&buffer[..len], offer.bytes.as_slice());
-    let mut request = request;
-    request.message = 3;
-    request.options.insert(50, client.ip.octets().to_vec());
-    request
-        .options
-        .insert(54, Ipv4Addr::LOCALHOST.octets().to_vec());
+    bytes[242] = 3;
+    bytes.pop();
+    bytes.extend([50, 4]);
+    bytes.extend(client.ip.octets());
+    bytes.extend([54, 4]);
+    bytes.extend(Ipv4Addr::LOCALHOST.octets());
+    bytes.push(255);
+    let request = Packet::parse(&bytes).unwrap();
     assert_eq!(
         reply(&request, client, &config, Ipv4Addr::LOCALHOST)
             .unwrap()

@@ -19,6 +19,7 @@ client data, and Prometheus metrics. Detailed requirements are in
 You need the Rust version specified in `rust-toolchain.toml` (rustup installs it
 automatically) and [just](https://github.com/casey/just). All builds use
 `Cargo.lock`.
+Release validation and `just check` also require Python 3.11 or newer.
 
 ```sh
 just build-release
@@ -85,6 +86,20 @@ the `macmapd_` prefix. Both endpoints include `Server: macmapd/<version>` and
 `macmapd_build_info{version="..."}`. A valid saved CSV is used indefinitely while
 the source is unavailable. The main TOML file is read only at startup.
 
+Only HTTP 200 replaces the CSV; a cached HTTP 304 keeps the current snapshot.
+Other statuses, including 204 and 206, retain the previous data and report an
+error. An empty or header-only CSV delivered with HTTP 200 intentionally clears
+all assignments. A valid empty snapshot still satisfies `/health`.
+
+Client metric series expire after 24 hours without requests (cleanup runs at
+most once per minute during requests or scrapes). A returning series starts at
+zero again; global request/response counters are not reset. Metric text is
+formatted after releasing the client-series lock.
+
+If relay option 82 alone would exceed the client's response-size limit, the
+server omits it, logs a warning with client context, and increments
+`macmapd_errors_total`. Required network settings are not silently truncated.
+
 ## Containers and Release Artifacts
 
 Podman is the default container engine for the generic recipes. Automated GitHub
@@ -137,12 +152,24 @@ Select Docker for generic recipes with `CONTAINER_ENGINE=docker`. Only
 The repository includes three workflows:
 
 - `CI` runs checks, unit tests, integration tests, and a release build on every
-  push and pull request for every branch.
+  push and pull request for every branch, including an amd64 container smoke test
+  against the real DHCP listener.
 - `Publish main container` builds and publishes the `linux/amd64`
   `ghcr.io/<owner>/macmapd:latest` image after every push to `main`.
 - `Release` accepts `vX.Y.Z` tags that point to a commit reachable from `main`,
   publishes `stable`, `vX.Y.Z`, and `X.Y.Z` image tags, and attaches the amd64
   cargo-dist archive plus its SHA-256 file to the GitHub Release.
+
+Publishing workflows require the reusable CI checks to pass. Release tags must
+exactly match the application version in both `Cargo.toml` and `Cargo.lock`;
+prerelease tags are rejected by this stable-release workflow. Update both files
+before creating a version tag. `RELEASE_TAG=vX.Y.Z just dist-build` validates the
+version and passes the explicit tag to cargo-dist.
+
+Release archives and the runtime image are built and the image is smoke-tested
+before publication. The same locally tested image is pushed to GHCR without a
+second build. GHCR publication and GitHub Release creation are separate external
+operations; a network failure during publication may still require a rerun.
 
 The workflows use the repository's default `GITHUB_TOKEN`; publishing jobs grant
 it package and release write permissions, so no additional registry secret is
@@ -152,7 +179,7 @@ required for GHCR.
 
 ```sh
 just fmt
-just check                     # fmt-check, Clippy, and unit tests
+just check                     # fmt-check, Clippy, Rust and release-validation tests
 just test-integration
 just docker-smoke macmapd:dev-amd64
 ```

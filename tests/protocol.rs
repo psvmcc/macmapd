@@ -215,3 +215,46 @@ fn malformed_options_and_long_routes() {
     let clients = Clients::parse(include_str!("../examples/clients.csv")).unwrap();
     assert!(reply(&packet, &clients.records[&packet.mac], &cfg, SERVER).is_err());
 }
+
+#[test]
+fn relay_option_is_omitted_only_when_it_does_not_fit() {
+    let mut relay = vec![1, 253];
+    relay.extend([b'a'; 253]);
+    for (maximum, omitted) in [(576u16, true), (1500, false)] {
+        let mut bytes = wire(
+            1,
+            &[(93, &[0, 9]), (82, &relay), (57, &maximum.to_be_bytes())],
+        );
+        bytes[24..28].copy_from_slice(&[192, 0, 2, 1]);
+        let response = answer(&Packet::parse(&bytes).unwrap(), &config()).unwrap();
+        assert_eq!(response.message, 2);
+        assert_eq!(response.relay_option_omitted, omitted);
+        assert!(response.bytes.len() <= usize::from(maximum));
+        let options = response_options(&response.bytes);
+        if omitted {
+            assert!(!options.contains_key(&82));
+        } else {
+            assert_eq!(options[&82], relay);
+        }
+    }
+}
+
+#[test]
+fn ipxe_uses_vendor_architecture_fallback_and_prefers_option_93() {
+    for (architecture, expected) in [(9u16, "x86_64"), (11, "arm64")] {
+        let vendor = format!("PXEClient:Arch:{architecture:05}:UNDI:003016");
+        let packet = Packet::parse(&wire(1, &[(77, b"iPXE"), (60, vendor.as_bytes())])).unwrap();
+        assert_eq!(packet.stage(), ("ipxe", expected));
+        let response = answer(&packet, &config()).unwrap();
+        assert_eq!(
+            response.boot_file,
+            config().boot.architectures[expected].ipxe_file
+        );
+    }
+    let packet = Packet::parse(&wire(
+        1,
+        &[(77, b"iPXE"), (60, b"PXEClient:Arch:00009"), (93, &[0, 11])],
+    ))
+    .unwrap();
+    assert_eq!(packet.stage(), ("ipxe", "arm64"));
+}
