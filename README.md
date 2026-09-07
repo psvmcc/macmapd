@@ -52,7 +52,8 @@ service starts. Registry authentication, when required, must be configured for
 the root account running this system Quadlet.
 The container uses host networking and a read-only root filesystem, drops every
 capability, and restores only `CAP_NET_BIND_SERVICE`, which the non-root image
-needs to bind DHCP port 67. The main configuration is mounted read-only, while a
+needs to bind DHCP port 67. The `/etc/macmapd` host directory is mounted
+read-only so atomic config-file replacement remains visible on SIGHUP, while a
 bind-mounted host directory stores the cached CSV in `/var/lib/macmapd`; create
 that directory before starting the service. The `U` mount option makes it
 writable by the image's non-root user and therefore changes its host ownership.
@@ -80,11 +81,13 @@ dhcp_packet_debug = false
 `level` accepts standard `tracing_subscriber::EnvFilter` expressions, such as
 `debug` or `macmapd=debug,tower_http=warn`. Use `format = "text"` for readable
 console output; `json` is generally more convenient for systemd and log
-aggregators. Setting `disable_timestamp = true` omits the date and time. With
-`level = "debug"` and `dhcp_packet_debug = true`, received and sent packets are
-logged with decoded fields and a tcpdump-like BOOTP/DHCP dump. This is verbose and
-should normally be enabled only while diagnosing DHCP traffic. XIDs use the
-tcpdump-compatible form `0x27e9542c`, and the architecture field is named `arch`.
+aggregators. Setting `disable_timestamp = true` omits the date and time. When
+`dhcp_packet_debug = true`, received and sent packets are logged at DEBUG with
+decoded fields and a tcpdump-like BOOTP/DHCP dump. The flag automatically
+enables DEBUG events for the `macmapd::dhcp` target even when the global `level`
+is `info` or stricter. This is verbose and should normally be enabled only while
+diagnosing DHCP traffic. XIDs use the tcpdump-compatible form `0x27e9542c`, and
+the architecture field is named `arch`.
 
 The `packet_dump` field includes BOOTP addresses and flags, MAC, boot fields,
 XID, DHCP options, parameter request names, relay suboptions, and classless

@@ -16,20 +16,21 @@ cleanup() {
 trap cleanup EXIT HUP INT TERM
 mkdir "$smoke_dir/source"
 mkdir "$smoke_dir/state"
+mkdir "$smoke_dir/config"
 chmod 0777 "$smoke_dir/state"
 printf '%s\n' '# smoke clients' 'smoke,smoke.example,example,uefi,1500,AA:BB:CC:DD:EE:FF,10.20.0.10,24,10.20.0.1' > "$smoke_dir/source/clients.csv"
-cat > "$smoke_dir/config.toml" <<EOF
+cat > "$smoke_dir/config/config.toml" <<EOF
 [dhcp]
 listen_ip = "0.0.0.0"
 lease_seconds = 3600
 [http]
 listen = "0.0.0.0:8080"
 [logging]
-level = "debug"
+level = "info"
 format = "json"
 disable_timestamp = true
 color = false
-dhcp_packet_debug = true
+dhcp_packet_debug = false
 [client_options]
 dns = ["10.20.0.53"]
 ntp = ["10.20.0.123"]
@@ -47,6 +48,7 @@ poll_interval_seconds = 1
 timeout_seconds = 2
 state_file = "/var/lib/macmapd/clients.csv"
 EOF
+sed 's/dhcp_packet_debug = false/dhcp_packet_debug = true/' "$smoke_dir/config/config.toml" > "$smoke_dir/config.debug.toml"
 "$engine" network create "$smoke_name" >/dev/null
 "$engine" run -d --name "$smoke_name-source" --network "$smoke_name" \
     --mount "type=bind,src=$smoke_dir/source,dst=/usr/share/nginx/html,readonly" docker.io/library/nginx:mainline-alpine >/dev/null
@@ -54,7 +56,7 @@ start_server() {
     "$engine" run -d --name "$smoke_name" --network "$smoke_name" \
         --cap-drop ALL --sysctl net.ipv4.ip_unprivileged_port_start=0 \
         -p 127.0.0.1::8080 \
-        --mount "type=bind,src=$smoke_dir/config.toml,dst=/etc/macmapd/config.toml,readonly" \
+        --mount "type=bind,src=$smoke_dir/config,dst=/etc/macmapd,readonly" \
         --mount "type=bind,src=$smoke_dir/state,dst=/var/lib/macmapd" "$image" >/dev/null
     smoke_port=$("$engine" port "$smoke_name" 8080/tcp | sed 's/.*://')
     attempt=0
@@ -69,8 +71,9 @@ start_server() {
     curl --fail --silent "http://127.0.0.1:$smoke_port/metrics" >/dev/null
 }
 start_server
-cp "$smoke_dir/config.toml" "$smoke_dir/config.valid.toml"
-printf '%s\n' 'invalid = true' > "$smoke_dir/config.toml"
+cp "$smoke_dir/config/config.toml" "$smoke_dir/config.valid.toml"
+printf '%s\n' 'invalid = true' > "$smoke_dir/config.next.toml"
+mv "$smoke_dir/config.next.toml" "$smoke_dir/config/config.toml"
 "$engine" kill --signal HUP "$smoke_name" >/dev/null
 attempt=0
 until "$engine" logs "$smoke_name" 2>&1 | grep -q 'configuration reload rejected'; do
@@ -79,7 +82,8 @@ until "$engine" logs "$smoke_name" 2>&1 | grep -q 'configuration reload rejected
     sleep 1
 done
 curl --fail --silent "http://127.0.0.1:$smoke_port/health" >/dev/null
-cp "$smoke_dir/config.valid.toml" "$smoke_dir/config.toml"
+cp "$smoke_dir/config.debug.toml" "$smoke_dir/config.next.toml"
+mv "$smoke_dir/config.next.toml" "$smoke_dir/config/config.toml"
 "$engine" kill --signal HUP "$smoke_name" >/dev/null
 attempt=0
 until "$engine" logs "$smoke_name" 2>&1 | grep -q 'reloading configuration'; do

@@ -57,7 +57,7 @@ fn parse_args(args: Vec<OsString>) -> Result<Option<(PathBuf, bool)>> {
 }
 
 fn init_logging(config: &Config) {
-    let filter = EnvFilter::new(config.logging.level.clone());
+    let filter = logging_filter(config);
     match (config.logging.format, config.logging.disable_timestamp) {
         (LogFormat::Json, true) => tracing_subscriber::fmt()
             .json()
@@ -77,6 +77,19 @@ fn init_logging(config: &Config) {
             .with_ansi(config.logging.color)
             .with_env_filter(filter)
             .init(),
+    }
+}
+
+fn logging_filter(config: &Config) -> EnvFilter {
+    let filter = EnvFilter::new(config.logging.level.clone());
+    if config.logging.dhcp_packet_debug {
+        filter.add_directive(
+            "macmapd::dhcp=debug"
+                .parse()
+                .expect("static DHCP logging directive"),
+        )
+    } else {
+        filter
     }
 }
 
@@ -142,5 +155,14 @@ mod tests {
                 .0,
             PathBuf::from("/tmp/custom.toml")
         );
+    }
+
+    #[test]
+    fn packet_debug_enables_dhcp_debug_with_an_info_global_level() {
+        let mut config = Config::load(std::path::Path::new("examples/server.toml")).unwrap();
+        config.logging.level = "info".into();
+        config.logging.dhcp_packet_debug = true;
+        let filter = logging_filter(&config).to_string();
+        assert!(filter.contains("macmapd::dhcp=debug"), "{filter}");
     }
 }

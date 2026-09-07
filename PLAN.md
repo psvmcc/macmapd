@@ -342,7 +342,8 @@ Format `xid` as eight lowercase hexadecimal digits with a `0x` prefix. When
 `dhcp_packet_debug` is enabled with DEBUG logging, emit structured received/sent
 events containing addresses, flags, packet size, and a tcpdump-like multiline
 BOOTP/DHCP decode. Include parameter request names, relay suboptions, and
-classless routes without requiring a raw socket or extra Linux capability.
+classless routes without requiring a raw socket or extra Linux capability. The
+flag enables DEBUG for the DHCP module independently of the global log level.
 
 HTTP CSV requests use `User-Agent: macmapd/<version>`.
 
