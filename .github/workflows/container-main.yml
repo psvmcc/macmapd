@@ -16,6 +16,8 @@ concurrency:
 jobs:
   verify:
     uses: ./.github/workflows/ci.yml
+    with:
+      skip_container_checks: true
     permissions:
       contents: read
 

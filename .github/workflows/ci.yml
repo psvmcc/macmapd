@@ -2,9 +2,15 @@ name: CI
 
 on:
   workflow_call:
+    inputs:
+      skip_container_checks:
+        description: Skip the CI image because the caller builds and tests the publishable image
+        required: false
+        type: boolean
+        default: false
   push:
-    branches:
-      - '**'
+    branches-ignore:
+      - main
   pull_request:
     branches:
       - '**'
@@ -48,10 +54,12 @@ jobs:
         run: just build-release
 
       - name: Build amd64 container
+        if: ${{ !inputs.skip_container_checks }}
         env:
           CONTAINER_ENGINE: docker
           TAG: ci
         run: just container-build
 
       - name: Test real DHCP server and state recovery
+        if: ${{ !inputs.skip_container_checks }}
         run: just docker-smoke macdack:ci-amd64

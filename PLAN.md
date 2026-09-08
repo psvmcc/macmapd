@@ -377,30 +377,35 @@ versions are locked in `Cargo.lock`, while the Rust version is pinned in
 - Automated Docker Buildx image builds target `linux/amd64` only.
 - Use the distroless image's glibc and CA certificates for the dynamically linked
   binary and HTTPS polling.
-- Mount the main configuration as a separate read-only file.
-- Mount the state directory as a writable volume accessible to the process user.
+- Bind-mount the main configuration directory read-only so atomic file replacement
+  remains visible after SIGHUP.
+- Bind-mount the state directory as writable storage accessible to the process user.
 - Add `.dockerignore`.
 - Document UDP/67 and HTTP port publication, privileges for binding port 67 and
   writing state, and Server Identifier configuration behind NAT.
 - Use `listen_ip = "0.0.0.0"` in the container configuration example.
-- Verify image startup, HTTP, and CSV persistence/recovery through a volume in the
-  smoke test.
+- Verify image startup, HTTP, and CSV persistence/recovery through bind mounts in
+  the smoke test.
 - Publish to a registry only through a separate, explicitly invoked recipe.
 
 ### GitHub Actions
 
-- Run formatting, Clippy, unit tests, integration tests, and a release build on
-  every push and pull request across all branches.
+- Run formatting, Clippy, unit tests, integration tests, and a release build
+  directly for non-main pushes and all pull requests.
 - On pushes to `main`, build and publish the `linux/amd64`
-  `ghcr.io/<owner>/macdack:latest` image.
-- On `vX.Y.Z` tags reachable from `main`, publish `stable`, `vX.Y.Z`, and `X.Y.Z`
-  amd64 image tags and create a GitHub Release containing the amd64 cargo-dist
-  archive and its SHA-256 checksum file.
+  `ghcr.io/<owner>/macdack:latest` image after invoking the reusable CI once;
+  exclude `main` from the CI workflow's direct push trigger to avoid duplicate
+  checks.
+- On `X.Y.Z` tags reachable from `main`, publish `latest`, `stable`, and `X.Y.Z`
+  amd64 image tags and create a GitHub Release containing the amd64
+  cargo-dist archive and its SHA-256 checksum file.
 - Use the repository `GITHUB_TOKEN` with `packages: write` and `contents: write`
   permissions for publishing jobs.
 
 Both publishing workflows depend on reusable CI, including the real-container
-smoke test. Require stable tags to match Cargo.toml and Cargo.lock, and pass the
+checks. Their reusable call skips the temporary CI image because each publishing
+job builds and smoke-tests its exact publishable image instead. Require stable
+tags to match Cargo.toml and Cargo.lock, and pass the
 explicit release tag to cargo-dist. Build archives and smoke-test the exact image
 before pushing it; fail when expected release files are missing. Publishing to
 GHCR and GitHub is not an atomic transaction.

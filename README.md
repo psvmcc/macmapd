@@ -204,7 +204,7 @@ just dist-plan                  # show planned cargo-dist artifacts
 just dist-build                 # build the amd64 cargo-dist artifact
 just container-build             # build an amd64 image with Podman by default
 just container-smoke macdack:dev-amd64
-just docker-push registry.example/dhcp v0.2.0
+just docker-push registry.example/dhcp 0.2.0
 ```
 
 `build-amd64` runs `cargo-dist` in a temporary Linux container and places the
@@ -217,24 +217,29 @@ Select Docker for generic recipes with `CONTAINER_ENGINE=docker`. Only
 
 The repository includes three workflows:
 
-- `CI` runs checks, unit tests, integration tests, and a release build on every
-  push and pull request for every branch, including an amd64 container smoke test
-  against the real DHCP listener.
+- `CI` runs directly for pushes outside `main` and for every pull request. It
+  performs checks, unit tests, integration tests, a release build, and an amd64
+  container smoke test against the real DHCP listener.
 - `Publish main container` builds and publishes the `linux/amd64`
-  `ghcr.io/<owner>/macdack:latest` image after every push to `main`.
-- `Release` accepts `vX.Y.Z` tags that point to a commit reachable from `main`,
-  publishes `stable`, `vX.Y.Z`, and `X.Y.Z` image tags, and attaches the amd64
-  cargo-dist archive plus its SHA-256 file to the GitHub Release.
+  `ghcr.io/<owner>/macdack:latest` image after every push to `main`. It invokes
+  the reusable CI workflow first, so the same checks are not started separately
+  by `ci.yml` for that push. Its reusable CI call skips the temporary CI image;
+  the publish job builds and smoke-tests the exact image it will push.
+- `Release` accepts `X.Y.Z` tags that point to a commit reachable from `main`,
+  publishes `latest`, `stable`, and `X.Y.Z` image tags, and attaches
+  the amd64 cargo-dist archive plus its SHA-256 file to the GitHub Release.
 
 Publishing workflows require the reusable CI checks to pass. Release tags must
 exactly match the application version in both `Cargo.toml` and `Cargo.lock`;
 prerelease tags are rejected by this stable-release workflow. Update both files
-before creating a version tag. `RELEASE_TAG=vX.Y.Z just dist-build` validates the
+before creating a version tag. `RELEASE_TAG=X.Y.Z just dist-build` validates the
 version and passes the explicit tag to cargo-dist.
 
 Release archives and the runtime image are built and the image is smoke-tested
 before publication. The same locally tested image is pushed to GHCR without a
-second build. GHCR publication and GitHub Release creation are separate external
+second build. Publish workflows skip the redundant temporary CI container build
+because they perform this exact-image check themselves. GHCR publication and
+GitHub Release creation are separate external
 operations; a network failure during publication may still require a rerun.
 
 The workflows use the repository's default `GITHUB_TOKEN`; publishing jobs grant
