@@ -5,7 +5,7 @@ image=${1:?Usage: docker-smoke.sh IMAGE:TAG}
 engine=${CONTAINER_ENGINE:-podman}
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 smoke_dir=$(mktemp -d)
-smoke_name="macmapd-smoke-$$"
+smoke_name="macdack-smoke-$$"
 cleanup() {
     "$engine" rm -f "$smoke_name" "$smoke_name-source" >/dev/null 2>&1 || true
     "$engine" network rm "$smoke_name" >/dev/null 2>&1 || true
@@ -46,7 +46,7 @@ ipxe_file = "http://10.20.0.20/boot.ipxe"
 url = "http://$smoke_name-source/clients.csv"
 poll_interval_seconds = 1
 timeout_seconds = 2
-state_file = "/var/lib/macmapd/clients.csv"
+state_file = "/var/lib/macdack/clients.csv"
 EOF
 sed 's/dhcp_packet_debug = false/dhcp_packet_debug = true/' "$smoke_dir/config/config.toml" > "$smoke_dir/config.debug.toml"
 "$engine" network create "$smoke_name" >/dev/null
@@ -56,8 +56,8 @@ start_server() {
     "$engine" run -d --name "$smoke_name" --network "$smoke_name" \
         --cap-drop ALL --sysctl net.ipv4.ip_unprivileged_port_start=0 \
         -p 127.0.0.1::8080 \
-        --mount "type=bind,src=$smoke_dir/config,dst=/etc/macmapd,readonly" \
-        --mount "type=bind,src=$smoke_dir/state,dst=/var/lib/macmapd" "$image" >/dev/null
+        --mount "type=bind,src=$smoke_dir/config,dst=/etc/macdack,readonly" \
+        --mount "type=bind,src=$smoke_dir/state,dst=/var/lib/macdack" "$image" >/dev/null
     smoke_port=$("$engine" port "$smoke_name" 8080/tcp | sed 's/.*://')
     attempt=0
     until curl --fail --silent "http://127.0.0.1:$smoke_port/health" >/dev/null; do

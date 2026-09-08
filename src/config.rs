@@ -296,7 +296,7 @@ mod tests {
         config.validate().unwrap();
 
         let invalid_level = include_str!("../examples/server.toml")
-            .replace("level = \"info\"", "level = \"macmapd==debug\"");
+            .replace("level = \"info\"", "level = \"macdack==debug\"");
         let config: Config = toml::from_str(&invalid_level).unwrap();
         assert!(config.validate().is_err());
 

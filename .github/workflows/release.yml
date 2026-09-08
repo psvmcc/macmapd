@@ -58,7 +58,7 @@ jobs:
         id: image
         shell: bash
         run: |
-          echo "name=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/macmapd" >> "$GITHUB_OUTPUT"
+          echo "name=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/macdack" >> "$GITHUB_OUTPUT"
           echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
@@ -74,6 +74,7 @@ jobs:
             type=raw,value=${{ github.ref_name }}
             type=raw,value=${{ steps.image.outputs.version }}
           labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.version=${{ steps.image.outputs.version }}
             org.opencontainers.image.revision=${{ github.sha }}
 
@@ -97,8 +98,8 @@ jobs:
 
       - name: Verify release files exist
         run: |
-          test -s target/distrib/macmapd-x86_64-unknown-linux-gnu.tar.xz
-          test -s target/distrib/macmapd-x86_64-unknown-linux-gnu.tar.xz.sha256
+          test -s target/distrib/macdack-x86_64-unknown-linux-gnu.tar.xz
+          test -s target/distrib/macdack-x86_64-unknown-linux-gnu.tar.xz.sha256
 
       - name: Log in to GHCR
         uses: docker/login-action@v4
@@ -118,7 +119,7 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v3
         with:
-          name: macmapd ${{ github.ref_name }}
+          name: macdack ${{ github.ref_name }}
           generate_release_notes: true
           fail_on_unmatched_files: true
           files: |

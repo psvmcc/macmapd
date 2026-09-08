@@ -54,4 +54,4 @@ jobs:
         run: just container-build
 
       - name: Test real DHCP server and state recovery
-        run: just docker-smoke macmapd:ci-amd64
+        run: just docker-smoke macdack:ci-amd64

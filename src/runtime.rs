@@ -20,7 +20,7 @@ use std::{
 };
 
 const MAX_CSV_BYTES: usize = 16 * 1024 * 1024;
-const SERVER_HEADER: &str = concat!("macmapd/", env!("CARGO_PKG_VERSION"));
+const SERVER_HEADER: &str = concat!("macdack/", env!("CARGO_PKG_VERSION"));
 type RequestLabels = (String, String, String, String, String);
 const METRIC_IDLE_TTL: Duration = Duration::from_secs(24 * 3600);
 
@@ -346,23 +346,23 @@ async fn metrics(State(shared): State<Arc<Shared>>) -> impl IntoResponse {
     let mut text = String::new();
     let _ = writeln!(
         text,
-        "# TYPE macmapd_build_info gauge\nmacmapd_build_info{{version=\"{}\"}} 1",
+        "# TYPE macdack_build_info gauge\nmacdack_build_info{{version=\"{}\"}} 1",
         escape_label(APP_VERSION)
     );
     for (name, counter) in [
-        ("macmapd_requests_total", &shared.requests),
-        ("macmapd_responses_total", &shared.responses),
-        ("macmapd_errors_total", &shared.errors),
-        ("macmapd_unknown_clients_total", &shared.unknown),
+        ("macdack_requests_total", &shared.requests),
+        ("macdack_responses_total", &shared.responses),
+        ("macdack_errors_total", &shared.errors),
+        ("macdack_unknown_clients_total", &shared.unknown),
         (
-            "macmapd_boot_mode_mismatches_total",
+            "macdack_boot_mode_mismatches_total",
             &shared.boot_mode_mismatches,
         ),
-        ("macmapd_sync_success_total", &shared.sync_success),
-        ("macmapd_sync_errors_total", &shared.sync_errors),
-        ("macmapd_state_read_errors_total", &shared.state_read_errors),
+        ("macdack_sync_success_total", &shared.sync_success),
+        ("macdack_sync_errors_total", &shared.sync_errors),
+        ("macdack_state_read_errors_total", &shared.state_read_errors),
         (
-            "macmapd_state_write_errors_total",
+            "macdack_state_write_errors_total",
             &shared.state_write_errors,
         ),
     ] {
@@ -380,23 +380,23 @@ async fn metrics(State(shared): State<Arc<Shared>>) -> impl IntoResponse {
         .map_or(0, |clients| clients.records.len());
     let _ = writeln!(
         text,
-        "# TYPE macmapd_clients gauge\nmacmapd_clients {count}"
+        "# TYPE macdack_clients gauge\nmacdack_clients {count}"
     );
     let status = shared.status.lock().unwrap();
     let _ = writeln!(
         text,
-        "# TYPE macmapd_last_successful_sync_timestamp_seconds gauge\nmacmapd_last_successful_sync_timestamp_seconds {}",
+        "# TYPE macdack_last_successful_sync_timestamp_seconds gauge\nmacdack_last_successful_sync_timestamp_seconds {}",
         status.last_success.unwrap_or(0)
     );
     let _ = writeln!(
         text,
-        "# TYPE macmapd_data_age_seconds gauge\nmacmapd_data_age_seconds {}",
+        "# TYPE macdack_data_age_seconds gauge\nmacdack_data_age_seconds {}",
         status
             .data_since
             .map_or(f64::NAN, |t| now().saturating_sub(t) as f64)
     );
     drop(status);
-    text.push_str("# TYPE macmapd_client_requests_total counter\n");
+    text.push_str("# TYPE macdack_client_requests_total counter\n");
     let request_series = {
         let mut metrics = shared.request_labels.lock().unwrap();
         metrics.prune(Instant::now());
@@ -405,7 +405,7 @@ async fn metrics(State(shared): State<Arc<Shared>>) -> impl IntoResponse {
     for ((location, hostname, stage, route, message), (count, _)) in &request_series {
         let _ = writeln!(
             text,
-            "macmapd_client_requests_total{{location=\"{}\",hostname=\"{}\",stage=\"{}\",route=\"{}\",message=\"{}\"}} {count}",
+            "macdack_client_requests_total{{location=\"{}\",hostname=\"{}\",stage=\"{}\",route=\"{}\",message=\"{}\"}} {count}",
             escape_label(location),
             escape_label(hostname),
             escape_label(stage),
@@ -413,18 +413,18 @@ async fn metrics(State(shared): State<Arc<Shared>>) -> impl IntoResponse {
             escape_label(message)
         );
     }
-    text.push_str("# TYPE macmapd_message_responses_total counter\n");
+    text.push_str("# TYPE macdack_message_responses_total counter\n");
     for (message, count) in shared.response_labels.lock().unwrap().iter() {
         let _ = writeln!(
             text,
-            "macmapd_message_responses_total{{message=\"{}\"}} {count}",
+            "macdack_message_responses_total{{message=\"{}\"}} {count}",
             escape_label(message)
         );
     }
     let durations = shared.durations.lock().unwrap();
     let _ = writeln!(
         text,
-        "# TYPE macmapd_response_duration_seconds summary\nmacmapd_response_duration_seconds_count {}\nmacmapd_response_duration_seconds_sum {}",
+        "# TYPE macdack_response_duration_seconds summary\nmacdack_response_duration_seconds_count {}\nmacdack_response_duration_seconds_sum {}",
         durations.0, durations.1
     );
     (
@@ -519,7 +519,7 @@ mod tests {
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         let mut config: Config = toml::from_str(include_str!("../examples/server.toml")).unwrap();
         let dir = std::env::temp_dir().join(format!(
-            "macmapd-poll-{}-{}",
+            "macdack-poll-{}-{}",
             std::process::id(),
             address.port()
         ));
@@ -571,7 +571,7 @@ mod tests {
     #[tokio::test]
     async fn persistence_replaces_complete_file() {
         let dir =
-            std::env::temp_dir().join(format!("macmapd-runtime-{}-{}", std::process::id(), now()));
+            std::env::temp_dir().join(format!("macdack-runtime-{}-{}", std::process::id(), now()));
         let path = dir.join("clients.csv");
         persist(&path, b"old").await.unwrap();
         persist(&path, b"new complete contents").await.unwrap();
@@ -622,7 +622,7 @@ mod tests {
             .unwrap();
         let text = String::from_utf8(bytes.to_vec()).unwrap();
         assert!(text.contains(concat!(
-            "macmapd_build_info{version=\"",
+            "macdack_build_info{version=\"",
             env!("CARGO_PKG_VERSION"),
             "\"} 1"
         )));

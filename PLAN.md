@@ -1,4 +1,4 @@
-# Rust DHCP Server Implementation Plan
+# macdack Implementation Plan
 
 ## 1. Purpose and Scope
 
@@ -66,7 +66,7 @@ client from an older version is not tracked.
 
 ## 3. Main Configuration
 
-Use TOML. The default path is `/etc/macmapd/config.toml`; `--config` overrides it.
+Use TOML. The default path is `/etc/macdack/config.toml`; `--config` overrides it.
 On Unix, SIGHUP validates the selected file and then replaces the process image
 with the same executable and arguments. This preserves the PID while applying
 all settings, including listeners and logging. Invalid TOML leaves the current
@@ -115,7 +115,7 @@ ipxe_file = "http://10.10.0.20/arm64/boot.ipxe"
 url = "https://config.example.internal/clients.csv"
 poll_interval_seconds = 60
 timeout_seconds = 10
-state_file = "/var/lib/macmapd/clients.csv"
+state_file = "/var/lib/macdack/clients.csv"
 ```
 
 Validate addresses, positive intervals and lease durations, the logging filter and
@@ -282,26 +282,26 @@ remains a valid snapshot for health checks.
   local snapshot exists.
 - After restart, do not report the state-file read time as the time of a successful
   network fetch; represent unknown timestamps explicitly.
-- Include `Server: macmapd/<version>` and `X-App-Version: <version>` headers.
+- Include `Server: macdack/<version>` and `X-App-Version: <version>` headers.
 
 ### GET /metrics
 
-Use Prometheus text format. Every metric name starts with `macmapd_`. The exposed
+Use Prometheus text format. Every metric name starts with `macdack_`. The exposed
 series are:
 
-- `macmapd_build_info{version}`.
-- `macmapd_requests_total`, `macmapd_responses_total`,
-  `macmapd_errors_total`, `macmapd_unknown_clients_total`, and
-  `macmapd_boot_mode_mismatches_total`.
-- `macmapd_sync_success_total` and `macmapd_sync_errors_total`.
-- `macmapd_state_read_errors_total` and `macmapd_state_write_errors_total`.
-- `macmapd_clients`.
-- `macmapd_last_successful_sync_timestamp_seconds` and
-  `macmapd_data_age_seconds`.
-- `macmapd_client_requests_total{location,hostname,stage,route,message}`.
-- `macmapd_message_responses_total{message}`.
-- `macmapd_response_duration_seconds_count` and
-  `macmapd_response_duration_seconds_sum`.
+- `macdack_build_info{version}`.
+- `macdack_requests_total`, `macdack_responses_total`,
+  `macdack_errors_total`, `macdack_unknown_clients_total`, and
+  `macdack_boot_mode_mismatches_total`.
+- `macdack_sync_success_total` and `macdack_sync_errors_total`.
+- `macdack_state_read_errors_total` and `macdack_state_write_errors_total`.
+- `macdack_clients`.
+- `macdack_last_successful_sync_timestamp_seconds` and
+  `macdack_data_age_seconds`.
+- `macdack_client_requests_total{location,hostname,stage,route,message}`.
+- `macdack_message_responses_total{message}`.
+- `macdack_response_duration_seconds_count` and
+  `macdack_response_duration_seconds_sum`.
 
 Malformed packets increment the general error counter and use fixed `unknown`
 client labels with `message="invalid"`; detailed failure reasons remain in logs.
@@ -345,7 +345,7 @@ BOOTP/DHCP decode. Include parameter request names, relay suboptions, and
 classless routes without requiring a raw socket or extra Linux capability. The
 flag enables DEBUG for the DHCP module independently of the global log level.
 
-HTTP CSV requests use `User-Agent: macmapd/<version>`.
+HTTP CSV requests use `User-Agent: macdack/<version>`.
 
 ## 10. Application Structure
 
@@ -392,7 +392,7 @@ versions are locked in `Cargo.lock`, while the Rust version is pinned in
 - Run formatting, Clippy, unit tests, integration tests, and a release build on
   every push and pull request across all branches.
 - On pushes to `main`, build and publish the `linux/amd64`
-  `ghcr.io/<owner>/macmapd:latest` image.
+  `ghcr.io/<owner>/macdack:latest` image.
 - On `vX.Y.Z` tags reachable from `main`, publish `stable`, `vX.Y.Z`, and `X.Y.Z`
   amd64 image tags and create a GitHub Release containing the amd64 cargo-dist
   archive and its SHA-256 checksum file.
@@ -498,13 +498,13 @@ privileges separately for network integration tests.
 - A refresh error does not change active data; saved CSV state supports restart
   while the source is unavailable.
 - Health and metrics reflect service state; hostname and location are supported in
-  labels, and all metric names use the `macmapd_` prefix.
+  labels, and all metric names use the `macdack_` prefix.
 - `/health` and `/metrics` expose the application version in HTTP headers, and
-  metrics include `macmapd_build_info` with a version label.
+  metrics include `macdack_build_info` with a version label.
 - `just check`, integration tests, and the automated amd64 build pass.
 - The container image starts with mounted configuration/state and passes the smoke
   test.
-- The no-argument command uses `/etc/macmapd/config.toml`; SIGHUP reloads a valid
+- The no-argument command uses `/etc/macdack/config.toml`; SIGHUP reloads a valid
   selected configuration without changing PID.
 
 ## 16. Protocol References

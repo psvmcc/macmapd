@@ -1,7 +1,9 @@
 [package]
-name = "macmapd"
-version = "0.1.0"
+name = "macdack"
+version = "0.2.0"
 edition = "2024"
+description = "Static DHCPv4 provisioning driven by MAC-address mappings"
+repository = "https://github.com/psvmcc/macdack"
 license = "MIT"
 readme = "README.md"
 

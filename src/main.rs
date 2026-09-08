@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail};
-use macmapd::{
+use macdack::{
     APP_VERSION,
     config::{Config, LogFormat},
     dhcp,
@@ -35,7 +35,7 @@ async fn main() -> Result<()> {
 }
 
 fn parse_args(args: Vec<OsString>) -> Result<Option<(PathBuf, bool)>> {
-    let mut path = PathBuf::from("/etc/macmapd/config.toml");
+    let mut path = PathBuf::from("/etc/macdack/config.toml");
     let mut check = false;
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
@@ -43,11 +43,11 @@ fn parse_args(args: Vec<OsString>) -> Result<Option<(PathBuf, bool)>> {
             "check-config" => check = true,
             "--config" => path = args.next().context("--config requires a path")?.into(),
             "--version" | "-V" => {
-                println!("macmapd {APP_VERSION}");
+                println!("macdack {APP_VERSION}");
                 return Ok(None);
             }
             "--help" | "-h" => {
-                println!("macmapd [check-config] [--config PATH] [--version]");
+                println!("macdack [check-config] [--config PATH] [--version]");
                 return Ok(None);
             }
             _ => bail!("unknown argument: {}", arg.to_string_lossy()),
@@ -84,7 +84,7 @@ fn logging_filter(config: &Config) -> EnvFilter {
     let filter = EnvFilter::new(config.logging.level.clone());
     if config.logging.dhcp_packet_debug {
         filter.add_directive(
-            "macmapd::dhcp=debug"
+            "macdack::dhcp=debug"
                 .parse()
                 .expect("static DHCP logging directive"),
         )
@@ -146,7 +146,7 @@ mod tests {
     fn default_and_overridden_config_paths() {
         assert_eq!(
             parse_args(vec![]).unwrap().unwrap().0,
-            PathBuf::from("/etc/macmapd/config.toml")
+            PathBuf::from("/etc/macdack/config.toml")
         );
         assert_eq!(
             parse_args(vec!["--config".into(), "/tmp/custom.toml".into()])
@@ -163,6 +163,6 @@ mod tests {
         config.logging.level = "info".into();
         config.logging.dhcp_packet_debug = true;
         let filter = logging_filter(&config).to_string();
-        assert!(filter.contains("macmapd::dhcp=debug"), "{filter}");
+        assert!(filter.contains("macdack::dhcp=debug"), "{filter}");
     }
 }

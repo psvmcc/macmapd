@@ -36,4 +36,4 @@ ipxe_file = "http://10.10.0.20/arm64/boot.ipxe"
 url = "https://config.example.internal/clients.csv"
 poll_interval_seconds = 60
 timeout_seconds = 10
-state_file = "/var/lib/macmapd/clients.csv"
+state_file = "/var/lib/macdack/clients.csv"

@@ -1,16 +1,14 @@
 [Unit]
-Description=macmapd static DHCPv4 server container
-Wants=network-online.target
-After=network-online.target
+Description=macdack static DHCPv4 server container
 
 [Container]
-ContainerName=macmapd
-Image=ghcr.io/psvmcc/macmapd:stable
+ContainerName=macdack
+Image=ghcr.io/psvmcc/macdack:stable
 Pull=newer
 AutoUpdate=registry
 Network=host
-Volume=/etc/macmapd:/etc/macmapd:ro,Z
-Volume=/var/lib/macmapd:/var/lib/macmapd:Z,U
+Volume=/etc/macdack:/etc/macdack:ro
+Volume=/var/lib/macdack:/var/lib/macdack:U
 ReadOnly=true
 NoNewPrivileges=true
 DropCapability=all

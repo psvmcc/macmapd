@@ -1,4 +1,4 @@
-use macmapd::{
+use macdack::{
     clients::Clients,
     config::Config,
     dhcp::{Packet, reply},
@@ -26,11 +26,11 @@ fn wire(message: u8, options: &[(u8, &[u8])]) -> Vec<u8> {
     bytes
 }
 
-fn answer(packet: &Packet, config: &Config) -> Option<macmapd::dhcp::Reply> {
+fn answer(packet: &Packet, config: &Config) -> Option<macdack::dhcp::Reply> {
     answer_as(packet, config, "uefi")
 }
 
-fn answer_as(packet: &Packet, config: &Config, boot_type: &str) -> Option<macmapd::dhcp::Reply> {
+fn answer_as(packet: &Packet, config: &Config, boot_type: &str) -> Option<macdack::dhcp::Reply> {
     let clients = Clients::parse(include_str!("../examples/clients.csv")).unwrap();
     let mut client = clients.records.get(&packet.mac).unwrap().clone();
     client.boot_type = boot_type.into();

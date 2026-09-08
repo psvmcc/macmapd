@@ -1,6 +1,6 @@
 set positional-arguments
 
-image := env_var_or_default("IMAGE", "macmapd")
+image := env_var_or_default("IMAGE", "macdack")
 tag := env_var_or_default("TAG", "dev")
 artifacts := env_var_or_default("ARTIFACTS", "dist")
 engine := env_var_or_default("CONTAINER_ENGINE", "podman")

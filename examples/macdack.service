@@ -1,13 +1,13 @@
 [Unit]
-Description=Static DHCPv4 server
+Description=macdack static DHCPv4 server
 Wants=network-online.target
 After=network-online.target
 
 [Service]
 Type=simple
 DynamicUser=yes
-StateDirectory=macmapd
-ExecStart=/usr/local/bin/macmapd
+StateDirectory=macdack
+ExecStart=/usr/local/bin/macdack
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5

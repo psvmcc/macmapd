@@ -1,18 +1,22 @@
-# macmapd
+# macdack
 
-For Podman, use `just podman-build-amd64` and
-`just container-smoke macmapd:dev-amd64`. The generic command
-`just container-build` uses Podman by default; set
-`CONTAINER_ENGINE=docker` to use Docker. Docker recipes remain available. On
-macOS, a running Podman machine is required; building amd64 on ARM may require
-emulation support in the VM. The smoke test also checks an actual UDP relay
-exchange, Linux wildcard binding, and UEFI/iPXE/OS routing in an isolated
-container network.
+<p align="center">
+  <img src="macdack.png" alt="macdack logo" width="420">
+</p>
 
-`macmapd` is a Rust DHCPv4 server with static MAC-based assignments,
-BIOS/UEFI/iPXE network boot support, classless routes, periodically refreshed CSV
-client data, and Prometheus metrics. Detailed requirements are in
-[PLAN.md](PLAN.md).
+<p align="center">
+  Logo artwork by <a href="https://github.com/greeddj">@greeddj</a> — thank you!
+</p>
+
+Static DHCPv4 provisioning driven by MAC-address mappings.
+
+The name combines **MAC** and **DHCP ACK**. `macdack` provides deterministic IP,
+routing, DNS, NTP, MTU, domain, and PXE/iPXE boot configuration for known
+clients, with first-class support for DHCP relay deployments.
+
+It is implemented in Rust and includes classless routes, periodically refreshed
+CSV client data, health checks, and Prometheus metrics. Detailed requirements
+are in [PLAN.md](PLAN.md).
 
 ## Running
 
@@ -23,11 +27,11 @@ Release validation and `just check` also require Python 3.11 or newer.
 
 ```sh
 just build-release
-target/release/macmapd check-config --config examples/server.toml
-target/release/macmapd --config examples/server.toml
+target/release/macdack check-config --config examples/server.toml
+target/release/macdack --config examples/server.toml
 ```
 
-Without arguments, `macmapd` reads `/etc/macmapd/config.toml`. Use `--config`
+Without arguments, `macdack` reads `/etc/macdack/config.toml`. Use `--config`
 only for a different path. On Unix, `SIGHUP` validates the same TOML path and
 replaces the current process in place, preserving its PID and reloading logging,
 listeners, polling settings, saved state, and the remote CSV. Invalid TOML is
@@ -35,14 +39,14 @@ logged and the running process is retained.
 
 Before starting the server, replace the example addresses, CSV URL, and state
 path with your own values. On Linux, UDP/67 requires appropriate privileges. Use
-the [examples/macmapd.service](examples/macmapd.service) unit, which grants
-`CAP_NET_BIND_SERVICE` and creates `/var/lib/macmapd`. The binary is installed at
-`/usr/local/bin/macmapd`, and the configuration at `/etc/macmapd/config.toml`.
+the [examples/macdack.service](examples/macdack.service) unit, which grants
+`CAP_NET_BIND_SERVICE` and creates `/var/lib/macdack`. The binary is installed at
+`/usr/local/bin/macdack`, and the configuration at `/etc/macdack/config.toml`.
 
-For Podman, [examples/macmapd.container](examples/macmapd.container) is an
+For Podman, [examples/macdack.container](examples/macdack.container) is an
 equivalent Quadlet example. Place the file in `/etc/containers/systemd/`, then
 run `systemctl daemon-reload` and
-`systemctl start macmapd.service`. Quadlet-generated services cannot be enabled
+`systemctl start macdack.service`. Quadlet-generated services cannot be enabled
 directly; the `[Install]` section makes the generator add the boot dependency.
 Enable periodic registry checks with
 `systemctl enable --now podman-auto-update.timer`. The Quadlet uses
@@ -52,12 +56,12 @@ service starts. Registry authentication, when required, must be configured for
 the root account running this system Quadlet.
 The container uses host networking and a read-only root filesystem, drops every
 capability, and restores only `CAP_NET_BIND_SERVICE`, which the non-root image
-needs to bind DHCP port 67. The `/etc/macmapd` host directory is mounted
+needs to bind DHCP port 67. The `/etc/macdack` host directory is mounted
 read-only so atomic config-file replacement remains visible on SIGHUP, while a
-bind-mounted host directory stores the cached CSV in `/var/lib/macmapd`; create
+bind-mounted host directory stores the cached CSV in `/var/lib/macdack`; create
 that directory before starting the service. The `U` mount option makes it
 writable by the image's non-root user and therefore changes its host ownership.
-`systemctl reload macmapd.service` sends SIGHUP to macmapd.
+`systemctl reload macdack.service` sends SIGHUP to macdack.
 
 The server accepts requests from any relay and looks clients up by the MAC in
 `chaddr`. With a wildcard bind on Linux, the Server Identifier is derived from
@@ -79,12 +83,12 @@ dhcp_packet_debug = false
 ```
 
 `level` accepts standard `tracing_subscriber::EnvFilter` expressions, such as
-`debug` or `macmapd=debug,tower_http=warn`. Use `format = "text"` for readable
+`debug` or `macdack=debug,tower_http=warn`. Use `format = "text"` for readable
 console output; `json` is generally more convenient for systemd and log
 aggregators. Setting `disable_timestamp = true` omits the date and time. When
 `dhcp_packet_debug = true`, received and sent packets are logged at DEBUG with
 decoded fields and a tcpdump-like BOOTP/DHCP dump. The flag automatically
-enables DEBUG events for the `macmapd::dhcp` target even when the global `level`
+enables DEBUG events for the `macdack::dhcp` target even when the global `level`
 is `info` or stricter. This is verbose and should normally be enabled only while
 diagnosing DHCP traffic. XIDs use the tcpdump-compatible form `0x27e9542c`, and
 the architecture field is named `arch`.
@@ -92,7 +96,7 @@ the architecture field is named `arch`.
 The `packet_dump` field includes BOOTP addresses and flags, MAC, boot fields,
 XID, DHCP options, parameter request names, relay suboptions, and classless
 routes. JSON logging escapes its embedded newlines; text logging renders it as a
-readable multiline value. Since macmapd uses a UDP socket rather than a raw
+readable multiline value. Since macdack uses a UDP socket rather than a raw
 packet socket, IP ID, fragmentation flags, and other IP-header fields are not
 available. Packet dumps require no additional Linux capability.
 
@@ -131,17 +135,17 @@ eligible for service.
 `/health` returns 200 when the DHCP socket is ready and a valid client snapshot is
 available; otherwise it returns 503. `/metrics` returns Prometheus text format;
 hostname and location metric labels come from the CSV, and every metric name has
-the `macmapd_` prefix. Both endpoints include `Server: macmapd/<version>` and
+the `macdack_` prefix. Both endpoints include `Server: macdack/<version>` and
 `X-App-Version: <version>` headers. The metrics payload also exposes
-`macmapd_build_info{version="..."}`. A valid saved CSV is used indefinitely while
+`macdack_build_info{version="..."}`. A valid saved CSV is used indefinitely while
 the source is unavailable. The main TOML is reread after a valid Unix SIGHUP.
 
 Only HTTP 200 replaces the CSV; a cached HTTP 304 keeps the current snapshot.
 Other statuses, including 204 and 206, retain the previous data and report an
 error. An empty or header-only CSV delivered with HTTP 200 intentionally clears
 all assignments. A valid empty snapshot still satisfies `/health`.
-Polling requests use `User-Agent: macmapd/<version>`.
-BIOS/UEFI mismatches increment `macmapd_boot_mode_mismatches_total`.
+Polling requests use `User-Agent: macdack/<version>`.
+BIOS/UEFI mismatches increment `macdack_boot_mode_mismatches_total`.
 
 Client metric series expire after 24 hours without requests (cleanup runs at
 most once per minute during requests or scrapes). A returning series starts at
@@ -150,7 +154,7 @@ formatted after releasing the client-series lock.
 
 If relay option 82 alone would exceed the client's response-size limit, the
 server omits it, logs a warning with client context, and increments
-`macmapd_errors_total`. Required network settings are not silently truncated.
+`macdack_errors_total`. Required network settings are not silently truncated.
 
 ## Containers and Release Artifacts
 
@@ -158,20 +162,31 @@ Podman is the default container engine for the generic recipes. Automated GitHub
 Actions builds and publishes the `linux/amd64` image only. The application itself
 still supports ARM64 boot profiles.
 
+Use `just podman-build-amd64` and
+`just container-smoke macdack:dev-amd64` for explicit Podman commands. The
+generic `just container-build` recipe also uses Podman by default; set
+`CONTAINER_ENGINE=docker` to select Docker instead. On macOS, Podman requires a
+running machine, and building amd64 on ARM may require emulation support in that
+VM. The smoke test performs a real UDP relay exchange and checks Linux wildcard
+binding, UEFI/iPXE/OS routing, configuration reload, and saved-state recovery in
+an isolated container network.
+
 ```sh
 just docker-build-amd64
-docker volume create macmapd-state
-docker run -d --name macmapd \
+sudo install -d -m 0755 /etc/macdack
+sudo install -m 0644 examples/server.toml /etc/macdack/config.toml
+sudo install -d -m 0700 -o 65532 -g 65532 /var/lib/macdack
+docker run -d --name macdack \
   --cap-drop ALL --sysctl net.ipv4.ip_unprivileged_port_start=0 \
   -p 67:67/udp -p 127.0.0.1:8080:8080 \
-  --mount type=bind,src="$PWD/examples/server.toml",dst=/etc/macmapd/config.toml,readonly \
-  --mount type=volume,src=macmapd-state,dst=/var/lib/macmapd \
-  macmapd:dev-amd64
+  --mount type=bind,src=/etc/macdack,dst=/etc/macdack,readonly \
+  --mount type=bind,src=/var/lib/macdack,dst=/var/lib/macdack \
+  macdack:dev-amd64
 ```
 
 For containers, set `listen_ip = "0.0.0.0"`, HTTP
 `listen = "0.0.0.0:8080"`, a client-reachable `server_identifier`, and the state
-path `/var/lib/macmapd/clients.csv`. The example uses a separate container network
+path `/var/lib/macdack/clients.csv`. The example uses a separate container network
 namespace and permits binding low ports through sysctl. With host networking,
 grant appropriate privileges for port 67 instead. Verify routing to the relay:
 responses are sent to `giaddr:67`.
@@ -188,8 +203,8 @@ just build-amd64                # cargo-dist artifact for x86_64-unknown-linux-g
 just dist-plan                  # show planned cargo-dist artifacts
 just dist-build                 # build the amd64 cargo-dist artifact
 just container-build             # build an amd64 image with Podman by default
-just container-smoke macmapd:dev-amd64
-just docker-push registry.example/dhcp v0.1.0
+just container-smoke macdack:dev-amd64
+just docker-push registry.example/dhcp v0.2.0
 ```
 
 `build-amd64` runs `cargo-dist` in a temporary Linux container and places the
@@ -206,7 +221,7 @@ The repository includes three workflows:
   push and pull request for every branch, including an amd64 container smoke test
   against the real DHCP listener.
 - `Publish main container` builds and publishes the `linux/amd64`
-  `ghcr.io/<owner>/macmapd:latest` image after every push to `main`.
+  `ghcr.io/<owner>/macdack:latest` image after every push to `main`.
 - `Release` accepts `vX.Y.Z` tags that point to a commit reachable from `main`,
   publishes `stable`, `vX.Y.Z`, and `X.Y.Z` image tags, and attaches the amd64
   cargo-dist archive plus its SHA-256 file to the GitHub Release.
@@ -232,7 +247,7 @@ required for GHCR.
 just fmt
 just check                     # fmt-check, Clippy, Rust and release-validation tests
 just test-integration
-just docker-smoke macmapd:dev-amd64
+just docker-smoke macdack:dev-amd64
 ```
 
 The smoke test requires Docker or Podman and curl. It starts a temporary CSV HTTP
@@ -249,6 +264,6 @@ testing on that architecture.
 
 ## License
 
-`macmapd` is licensed under the MIT License. See [LICENSE](LICENSE). Third-party
+`macdack` is licensed under the MIT License. See [LICENSE](LICENSE). Third-party
 dependencies remain under their respective licenses and are not relicensed by
 this project.
